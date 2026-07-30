@@ -14,7 +14,7 @@
 
 传统机器学习的一条样本，是表里的一行：几十个结构化字段，天然适合放进数据库，也天然能被 snapshot、diff、merge。
 
-深度学习的数据不是这样。一条样本的主体是**一个文件**——一张几 MB 的图、一段几十 MB 的音频、一个上百 MB 的视频片段（说到底就是一堆字节）。整个数据集动辄上千万个文件、TB 到 PB。你没法、也不该把这些文件塞进数据库。
+深度学习的数据不是这样。一条样本的主体是**一个文件**——一张几 MB 的图、一段几十 MB 的音频、一个上百 MB 的视频片段（说到底就是一堆字节）。整个数据集动辄上千万个文件、TB 到 PB。把这些文件塞进数据库，既不划算、也发挥不出数据库的长处（下一节展开）。
 
 但请注意一件事：**文件本身不进数据库，关于文件的一切却高度结构化。** 每条样本都有：它存在哪（对象路径）、它的内容 hash、它的感知 hash、类别标签、来自哪个源、什么 license、宽高、质量分、属于训练还是测试、被哪个模型版本用过……这些是几千万行、还在不断增删改的结构化记录——正是最需要行级版本语义的地方。
 
@@ -40,9 +40,9 @@
 
 - **文件没有可 diff 的结构。** git4data 的价值在[第二篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part2-hands-on-zh/index.md)就立住了：行级的 diff / merge / query。可一张 JPEG 没有行、没有主键、没有列——对两张图做“行级 diff”毫无意义。[第四篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part4-landscape-zh/index.md)划过的边界也正是这条：git4data 管的是“同一 schema 下的结构化数据演进”，而文件根本没有 schema。
 
-- **文件是整体、不可变、内容寻址的。** 一张图不会被逐行 `UPDATE`，它只会被整体替换。这种“整块对象 + 按内容去重 + 廉价分支”的版本化，恰恰是对象存储 + lakeFS（git-over-objects）最擅长的；硬套数据库的行级 MVCC 反而别扭。
+- **文件是整体、不可变地被写入的。** 一张图不会被逐行 `UPDATE`，它只会被整体替换。lakeFS 把对象整体写入、底层对象不可变，branch 是零拷贝的元数据操作、未改动的对象跨版本复用——这种“整块对象 + 廉价分支”的版本化，正是对象存储 + lakeFS（git-over-objects）最擅长的；硬套数据库的行级 MVCC 反而别扭。
 
-- **数据库本来也只该存指针。** [第八篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)的总览已经说清：不可解析文件交给对象存储 / lakeFS，MatrixOne 只存目录、hash、URI 和 commit；而且数据库快照只能冻结**指针字段的取值**，冻不住外部文件本身（`datalink` 那条边界）——所以文件的版本，必须由 lakeFS 自己来担。
+- **更划算的是让数据库只存指针。** MatrixOne 也能存 BLOB，但把 PB 级文件放进去是成本与架构上的取舍；[第八篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)的总览给的更实际的分工是：不可解析文件交给对象存储 / lakeFS，MatrixOne 存目录、hash、URI 和 commit。而且数据库快照只能冻结**指针字段的取值**，冻不住外部文件本身（`datalink` 那条边界）——所以文件的版本，交给 lakeFS 更顺。
 
 一句话：**数据库最擅长的是“结构化元数据的行级版本化”，lakeFS 最擅长的是“大文件的整体版本化”。让各自做各自最强的事，再把两者钉在一起，就是这一篇的全部主张。**
 
@@ -59,7 +59,7 @@
 | 数据接入 | 新一批图片质量未知，不能污染主集 | 落到一条 ingest 分支 | 元数据行进入元数据分支，审计通过再 `MERGE` |
 | 去重 | 上千万文件里有精确重复和感知近重复 | 对象照存 | `content_hash` / `phash` 上 `GROUP BY`，纯 SQL 找重复 |
 | 去污染 | 训练集混进了评测 / 基准样本 | —— | 元数据对基准 hash 表做反连接，`DELETE` 掉重合 |
-| 完整性检查 | 每个样本都要有标签、指针不悬空 | 对象存在性由 lakeFS 保证 | 元数据上查缺标签 / 悬空指针 |
+| 完整性检查 | 每个样本都要有标签、指针要解析到真文件 | 对象存在性由 lakeFS 保证 | 查缺标签；对 commit 的对象清单反连接验存在 |
 | 重标注 | 类别标签、安全分要迭代 | 文件不变 | 每人一条分支、`MERGE` 冲突、`DIFF` 出改动 |
 | data curation | 按质量 / 安全 / license 筛出干净子集 | —— | 版本化的 `dataset_membership` 子集 |
 | 数据集发布 | 冻结“这次训练到底用了哪些文件的哪一版” | 一个 lakeFS commit | 一个库级元数据快照，并把 commit 记进注册表 |
@@ -117,9 +117,11 @@ run = 元数据快照（metadata snapshot）
 
 ```bash
 # 上传对象到 ingest 分支后，提交并合并到 main
-curl -u $KEY:$SECRET -X POST $L/repositories/media/branches/ingest/commits -d '{"message":"ingest 2026w30"}'
-curl -u $KEY:$SECRET -X POST $L/repositories/media/refs/ingest/merge/main   -d '{"message":"publish 2026w30"}'
-#   -> main commit（文件版本）= ba1693908b37…
+curl -u $KEY:$SECRET -H 'Content-Type: application/json' \
+     -X POST $L/repositories/media/branches/ingest/commits -d '{"message":"ingest 2026w30"}'
+curl -u $KEY:$SECRET -H 'Content-Type: application/json' \
+     -X POST $L/repositories/media/refs/ingest/merge/main   -d '{"message":"publish 2026w30"}'
+#   -> main commit（文件版本）= ba1693908b37…（示例，每次运行不同）
 ```
 
 **元数据侧（MatrixOne）**：同一批样本的元数据行——指针指向 lakeFS 对象、`object_commit` 填刚拿到的那个 commit——进入一条分支，先审计、通过才合并。这正是[第七篇 Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md) 那套，只是现在跨了两个世界：
@@ -141,7 +143,7 @@ DATA BRANCH DIFF samples_stage AGAINST samples OUTPUT SUMMARY;   -- 实测 INSER
 DATA BRANCH MERGE samples_stage INTO samples;                    -- 全部通过才发布
 ```
 
-**两侧各自审计、各自原子合并，谁没过谁都不进主线。**
+**两侧各自审计、各自在本系统内原子合并。** 但要说清楚：lakeFS 和 MatrixOne 之间**没有跨系统事务**——本例是文件侧先合并、元数据侧后合并，若元数据侧失败，lakeFS main 已经动了。真要做到“任一侧不过、两侧都不发布”，需要一层发布协调：两侧先各自形成不可变候选版本，联合校验通过后，再统一以版本化 registry 对外发布可见版本。
 
 ### 第二站：去重——精确 + 感知，纯 SQL，不碰一个文件
 
@@ -169,27 +171,36 @@ SELECT COUNT(*) AS near_dup_groups FROM (
 -- 训练样本里，有多少和评测基准（按内容）重合？
 SELECT COUNT(*) AS contaminated FROM samples s
 WHERE EXISTS (SELECT 1 FROM eval_hashes e WHERE e.content_hash = s.content_hash);
---   实测 1000（500 个基准原件 + 它们各自被重新爬到的镜像）
+--   实测 1000（对应 500 个 benchmark 内容 hash：每张基准图 + 它被重新爬到的那份精确副本）
 ```
 
-注意这里 exact 命中 500，但连同镜像一起是 1000——**去污染必须覆盖重复与近重复**，否则漏网的镜像照样把基准喂进了训练。这也是为什么去重和去污染要放在同一张元数据上一起做。
+这条反连接命中的 1000 行，全是 `content_hash` 精确相等的命中（500 个唯一 benchmark hash，每个对上原件和它的精确副本各一行）。**注意它只覆盖“精确内容重复”**：裁剪、压缩、加水印后的近重复（`content_hash` 不同、`phash` 相近）并不会被命中——要连近重复一起去污染，得像去重那样，再对 benchmark 的 `phash` 做一次反连接。本文的实现只做了精确去污染。
 
-### 第四站：完整性检查——每个样本都要有标签、指针不悬空
+### 第四站：完整性检查——每个样本都要有标签，指针要真能解析到文件
 
-训练一个图像分类模型，每个样本至少要满足两条：**有一个类别标签**、**指针指向的文件真的存在**。最常见的破损是标注没跟上（有图没标签），或指针悬空（指向一个已被删除的对象）：
+训练一个图像分类模型，每个样本至少要满足两条：**有一个类别标签**、**指针能解析到一个真实存在的文件**。
+
+第一条在元数据上一条 SQL 就能查：
 
 ```sql
 -- 缺标签：有图却没有类别标签，本轮不能进训练
 SELECT COUNT(*) AS unlabeled FROM samples WHERE label IS NULL;
 --   实测 550
-
--- 悬空指针：元数据指向的对象已不在
-SELECT COUNT(*) AS dangling_pointer FROM samples
-WHERE object_uri IS NULL OR object_commit IS NULL;
---   实测 0
 ```
 
-这里要点明一个文件世界和元数据世界之间的陷阱：**删掉 lakeFS 里的一个对象，不会自动删掉元数据里指向它的行；反过来删元数据行，也不会删文件。** 两个世界各自版本化，但一致性要靠纪律——发布前用 SQL 查一遍悬空指针和缺标签样本，是最省事的完整性门禁。
+第二条要小心：**只查 `object_uri` / `object_commit` 是否非空，只能证明字段填了值，并不能证明文件真的存在**（commit 不存在、path 写错、对象被删，这种检查都发现不了）。真正的存在性检查得去问 lakeFS——最简单的做法是把那个 commit 下的对象清单拉进来，和指针做一次反连接：
+
+```sql
+-- 先把 commit 的对象清单导入一张表 lakefs_objects(path)，再反连接
+SELECT COUNT(*) AS dangling FROM samples s
+WHERE NOT EXISTS (
+  SELECT 1 FROM lakefs_objects o
+  WHERE s.object_uri = CONCAT('lakefs://media/main/', o.path)
+);
+--   配套 run_practice.sh 里这一步是真跑的：从 lakeFS 列出 commit 的对象、导进来反连接，实测 dangling = 0
+```
+
+这也点出文件世界和元数据世界之间的陷阱：**删掉 lakeFS 里的一个对象，不会自动删掉元数据里指向它的行；反过来删元数据行，也不会删文件。** 两个世界各自版本化，一致性要靠这类跨世界的校验来兜底。
 
 ### 第五站：重标注——元数据在演进，文件纹丝不动
 
@@ -223,16 +234,21 @@ WHERE s.label IS NOT NULL
 --   实测 train 38474 / valid 4934 / test 4935
 ```
 
-然后是关键一步——**把元数据快照和 lakeFS commit 钉在一起**：
+然后是关键一步——**先把 lakeFS commit 登记进注册表，再打快照，让这条绑定被冻进快照里**。顺序很重要：先写 registry、后打 snapshot，绑定才落在被冻结的元数据版本里，而不是只躺在可变的活库里：
 
 ```sql
-CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
-
--- 把“元数据版本 × 文件版本”登记成一条可执行的绑定
+-- 先登记“元数据版本 × 文件版本”的绑定（快照名提前定好，行里可以先写上它）
 INSERT INTO dataset_registry
 SELECT 'ic_v1', 'ic_dataset_v1', 'media', 'ba1693908b37…',
        COUNT(*), 'metadata snapshot × lakeFS commit = reproducible training set'
 FROM dataset_membership;
+
+-- 再打快照，把 samples / dataset_membership / dataset_registry 一起冻结
+CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
+
+-- 现在这条绑定就在快照里了（不只在活库里）：
+SELECT lakefs_commit FROM dataset_registry {SNAPSHOT='ic_dataset_v1'} WHERE dataset_version = 'ic_v1';
+--   -> ba1693908b37…
 ```
 
 从此，“ic_v1 到底用了哪些数据”不再是一句口头描述，而是一个乘积：`ic_dataset_v1`（元数据快照）指明了样本、标签、切分，`ba1693908b37…`（lakeFS commit）指明了文件。而复现也不止是数出行数——可以把**确切的文件**取回来：从快照读出一条训练样本的指针和 commit，再回 lakeFS 按那个 commit 取文件（下面这段在配套 [`run_practice.sh`](https://github.com/matrixorigin/git4data-tutorial/blob/main/10-multimodal-lakefs/run_practice.sh) 里是真跑的）：
@@ -258,14 +274,14 @@ curl -u $KEY:$SECRET "$L/repositories/media/refs/ba1693908b37…/objects?path=im
 
 **lakeFS 管文件。** 它是对象存储上的 git 式版本控制：在 S3 / GCS / Azure 之上提供 branch / commit / merge，把“对象存储在某个时刻的状态”钉成一个可回到的 commit；还能用 pre-merge hook 在合并前做文件层校验。它擅长的是**大文件本体**的版本化与回滚。它不做的是：把上千万条元数据当成一张表来跑 SQL、JOIN、聚合，或者告诉你“这两版之间，哪些**行**的标签变了”。
 
-**MatrixOne 的 Git4Data 能力管元数据。** 它把元数据当成活的、可查询的表：行级 snapshot / branch / diff / merge / restore，随时能 JOIN、聚合、反连接。它擅长的是**结构化元数据**的版本化、行级比对和原子发布。它不做的是：存储和版本化图音视频的文件本体。
+**MatrixOne 的 Git4Data 能力管元数据。** 它把元数据当成活的、可查询的表：行级 snapshot / branch / diff / merge / restore，随时能 JOIN、聚合、反连接。它擅长的是**结构化元数据**的版本化、行级比对和原子发布。它不适合承担的是：存储和版本化图音视频的文件本体（能存 BLOB，但不划算）。
 
 **两者怎么组合？** 靠“元数据快照里记一个 lakeFS commit”。发布时，MatrixOne 侧打一个库级元数据快照，同时把当时的 lakeFS commit 写进注册表；复现时，两个 ID 一起用。
 
 | 对象 | 更适合谁 | 它负责什么 | 它不负责什么 |
 |---|---|---|---|
 | 图 / 音 / 视频等大文件 | **lakeFS / 对象存储** | 文件的版本、回滚、pre-merge 校验 | 行级元数据查询与 diff |
-| 元数据：指针、label、hash、split、来源 | **MatrixOne（Git4Data 能力）** | 行级快照 / 分支 / diff / merge / 恢复，可 JOIN 可聚合 | 存储文件本体 |
+| 元数据：指针、label、hash、split、来源 | **MatrixOne（Git4Data 能力）** | 行级快照 / 分支 / diff / merge / 恢复，可 JOIN 可聚合 | 存文件本体（能存 BLOB，但不划算） |
 | 两者的对齐 | **注册表里的一条绑定** | 元数据快照 × lakeFS commit = 可复现训练集 | —— |
 
 这比“指望一个工具同时管好文件和元数据”更贴近现实。文件有文件的最优解，元数据有元数据的最优解，关键是把它们**显式地钉在一起**。

@@ -5,24 +5,27 @@
 # Proves the two version worlds compose into one reproducible training set (an
 #   image-classification dataset; label = safe / nsfw):
 #   - lakeFS holds the image files; we ingest on a branch, commit, merge to main
-#     -> a real lakeFS commit id (the BYTE version).
-#   - MatrixOne holds the metadata (pointer + commit + hashes + caption + label);
-#     we dedup / decontaminate / align / curate in SQL, then snapshot the db
-#     -> a MatrixOne snapshot (the METADATA version).
-#   - We bind (metadata snapshot, lakeFS commit) in a registry, then REPRODUCE:
-#     read a train row's pointer+commit from MatrixOne, fetch those exact bytes
-#     back from lakeFS at that commit.
+#     -> a real lakeFS commit id (the FILE version).
+#   - MatrixOne holds the metadata (pointer + commit + hashes + label + license);
+#     we dedup / decontaminate / integrity-check / curate in SQL, register the
+#     (metadata snapshot, lakeFS commit) binding, THEN snapshot the db so the
+#     binding is frozen inside the snapshot (the METADATA version).
+#   - REPRODUCE: read a train row's pointer+commit from the snapshot, fetch that
+#     exact file back from lakeFS at that commit.
+#   Note: lakeFS merge and MatrixOne merge are each atomic on their own side;
+#   there is no cross-system transaction here (the file side merges first).
 #
-# Start the two services first (defaults match these):
+# Start the two services first (defaults match these). Pin the lakeFS version
+# for a reproducible run:
 #   docker run -d --name lakefs -p 8000:8000 \
 #     -e LAKEFS_INSTALLATION_USER_NAME=admin \
 #     -e LAKEFS_INSTALLATION_ACCESS_KEY_ID=AKIAIOSFOLKFSSAMPLES \
 #     -e LAKEFS_INSTALLATION_SECRET_ACCESS_KEY=wJalrXUtnFEMI0000EXAMPLEKEY0000000000 \
 #     -e LAKEFS_DATABASE_TYPE=local -e LAKEFS_BLOCKSTORE_TYPE=local \
 #     -e LAKEFS_AUTH_ENCRYPT_SECRET_KEY=a-string-used-to-encrypt-secrets-0001 \
-#     treeverse/lakefs:latest run
+#     treeverse/lakefs:1.84.0 run
 #   docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone:4.1.0
-# Verified on lakeFS (local) + MatrixOne 4.1.0.
+# Verified on lakeFS 1.84.0 (local) + MatrixOne 4.1.0.
 # =============================================================================
 set -euo pipefail
 
@@ -97,13 +100,28 @@ WHERE s.label IS NOT NULL AND s.license<>'unknown'
 SELECT split_name, COUNT(*) FROM dataset_membership GROUP BY split_name ORDER BY split_name;
 SQL
 
+# real integrity: list the commit's objects and anti-join the pointers (a NULL
+# check alone can't tell whether the referenced file actually exists).
+curl -sf -u "$AUTH" "$LAKEFS/repositories/media/refs/main/objects/ls?amount=1000&presign=false" \
+  | python3 -c "import sys,json;[print(o['path']) for o in json.load(sys.stdin)['results'] if o.get('path_type','object')=='object']" > "$WORK/objs"
+{ echo "USE mm_practice; DROP TABLE IF EXISTS lakefs_objects; CREATE TABLE lakefs_objects(path VARCHAR(256));"
+  while read -r p; do echo "INSERT INTO lakefs_objects VALUES ('$p');"; done < "$WORK/objs"; } | MO >/dev/null
+echo "    real integrity (existence) check — pointers with no object at the commit:"
+MO <<SQL
+USE mm_practice;
+SELECT COUNT(*) AS dangling FROM samples s
+WHERE NOT EXISTS (SELECT 1 FROM lakefs_objects o WHERE s.object_uri = CONCAT('lakefs://media/main/', o.path));
+SQL
+
+# Register the binding FIRST, then snapshot -> the commit is INSIDE the snapshot.
 MO <<SQL >/dev/null
 USE mm_practice;
+DROP TABLE lakefs_objects;
+CREATE TABLE dataset_registry (dataset_version VARCHAR(32) PRIMARY KEY, metadata_snapshot VARCHAR(64), lakefs_repo VARCHAR(64), lakefs_commit VARCHAR(64), n_samples BIGINT, note VARCHAR(128));
+INSERT INTO dataset_registry SELECT 'mm_v1','mm_dataset_v1','media','$COMMIT',COUNT(*),'metadata snapshot x lakeFS commit' FROM dataset_membership;
 CREATE SNAPSHOT mm_dataset_v1 FOR DATABASE mm_practice;
-CREATE TABLE dataset_registry (dataset_version VARCHAR(32) PRIMARY KEY, metadata_snapshot VARCHAR(64), lakefs_repo VARCHAR(64), lakefs_commit VARCHAR(64), n_samples BIGINT);
-INSERT INTO dataset_registry SELECT 'mm_v1','mm_dataset_v1','media','$COMMIT',COUNT(*) FROM dataset_membership;
 SQL
-echo "    bound: metadata snapshot mm_dataset_v1  ×  lakeFS commit ${COMMIT:0:12}…"
+echo "    bound (frozen inside the snapshot): metadata snapshot mm_dataset_v1  ×  lakeFS commit ${COMMIT:0:12}…"
 
 echo "### 4. REPRODUCE: read a train row from the snapshot, fetch its exact bytes from lakeFS"
 read -r URI RCOMMIT < <(MO_RAW <<SQL

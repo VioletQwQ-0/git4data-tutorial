@@ -14,7 +14,7 @@ In this part, we turn to the data of **deep learning**. One clarification first:
 
 A classical ML sample is a row in a table: a few dozen structured fields, naturally fit for a database, naturally snapshot-able, diff-able, merge-able.
 
-Deep learning's data isn't like that. A sample's body is **a file** — a few-MB image, a few-tens-of-MB audio clip, a hundred-MB video segment (a pile of bytes, ultimately). A whole dataset runs to tens of millions of files, TB to PB. You can't, and shouldn't, stuff those files into a database.
+Deep learning's data isn't like that. A sample's body is **a file** — a few-MB image, a few-tens-of-MB audio clip, a hundred-MB video segment (a pile of bytes, ultimately). A whole dataset runs to tens of millions of files, TB to PB. Stuffing those files into a database is neither economical nor a good fit for what a database is good at (more in the next section).
 
 But note one thing: **the files themselves don't go in the database, yet everything about the files is highly structured.** Every sample has: where it lives (object path), its content hash, its perceptual hash, its class label, which source it came from, what license, width/height, quality score, whether it's train or test, which model version used it… These are tens of millions of rows, still constantly inserted / updated / deleted — exactly where row-level version semantics matter most.
 
@@ -40,9 +40,9 @@ A natural question: since MatrixOne can version data, why not put the image file
 
 - **Files have no structure to diff.** Git4Data's value, established back in [Part 2](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part2-hands-on/index.md), is row-level diff / merge / query. But a JPEG has no rows, no primary key, no columns — a "row-level diff" of two images is meaningless. The boundary [Part 4](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part4-landscape/index.md) drew is exactly this: Git4Data manages "structured-data evolution under one schema," and a file has no schema.
 
-- **Files are whole, immutable, content-addressed.** An image isn't `UPDATE`d row by row; it's replaced wholesale. Versioning that's "whole objects + content dedup + cheap branching" is exactly what object storage + lakeFS (git-over-objects) is built for; forcing the database's row-level MVCC onto it is a mismatch.
+- **Files are written whole and are immutable.** An image isn't `UPDATE`d row by row; it's replaced wholesale. lakeFS writes objects whole, the underlying objects are immutable, a branch is a zero-copy metadata operation, and unmodified objects are reused across versions — this "whole objects + cheap branching" versioning is exactly what object storage + lakeFS (git-over-objects) is built for; forcing the database's row-level MVCC onto it is a mismatch.
 
-- **The database should only hold the pointer anyway.** [Part 8](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md)'s overview already said it: unparseable files go to object storage / lakeFS, and MatrixOne stores only the catalog, hashes, URI, and commit — and a database snapshot can only freeze the **value of the pointer field**, not the external file itself (the `datalink` boundary). So the file version must be lakeFS's own job.
+- **It's more economical for the database to hold just the pointer.** MatrixOne can store BLOBs, but putting PB of files in it is a cost/architecture trade-off; the more practical division from [Part 8](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md)'s overview is: unparseable files go to object storage / lakeFS, and MatrixOne stores the catalog, hashes, URI, and commit. And a database snapshot can only freeze the **value of the pointer field**, not the external file itself (the `datalink` boundary) — so the file version is better left to lakeFS.
 
 In one line: **the database is best at "row-level versioning of structured metadata," lakeFS is best at "whole-file versioning of large objects." Let each do what it's strongest at, then pin the two together — that's the whole thesis of this part.**
 
@@ -59,7 +59,7 @@ The conclusion first. The whole lifecycle of this file-based training data split
 | Ingestion | new images, quality unknown, mustn't poison the set | land on an ingest branch | metadata rows on a branch, `MERGE` only on pass |
 | Dedup | exact + perceptual duplicates across tens of millions | objects stored as-is | `GROUP BY` on `content_hash` / `phash`, pure SQL |
 | Decontamination | eval / benchmark samples leaked into train | —— | anti-join the metadata to a benchmark-hash table, `DELETE` overlaps |
-| Integrity check | every sample needs a label and a live pointer | object existence guaranteed by lakeFS | find missing labels / dangling pointers on the metadata |
+| Integrity check | every sample needs a label and a resolving pointer | object existence guaranteed by lakeFS | find missing labels; anti-join pointers vs the commit's object listing |
 | Relabel | class labels, safety scores iterate | files unchanged | one branch per person, `MERGE` conflicts, `DIFF` the changes |
 | Data curation | filter a clean subset by quality / safety / license | —— | a versioned `dataset_membership` subset |
 | Dataset release | freeze "which version of which files this training used" | one lakeFS commit | one database-scope metadata snapshot, commit recorded in a registry |
@@ -117,9 +117,11 @@ Monday, upstream delivers a new batch of images. Both worlds move at once, each 
 
 ```bash
 # after uploading objects to the ingest branch, commit and merge to main
-curl -u $KEY:$SECRET -X POST $L/repositories/media/branches/ingest/commits -d '{"message":"ingest 2026w30"}'
-curl -u $KEY:$SECRET -X POST $L/repositories/media/refs/ingest/merge/main   -d '{"message":"publish 2026w30"}'
-#   -> main commit (the file version) = ba1693908b37…
+curl -u $KEY:$SECRET -H 'Content-Type: application/json' \
+     -X POST $L/repositories/media/branches/ingest/commits -d '{"message":"ingest 2026w30"}'
+curl -u $KEY:$SECRET -H 'Content-Type: application/json' \
+     -X POST $L/repositories/media/refs/ingest/merge/main   -d '{"message":"publish 2026w30"}'
+#   -> main commit (the file version) = ba1693908b37…  (example; differs per run)
 ```
 
 **Metadata side (MatrixOne)**: the same batch's metadata rows — pointer to the lakeFS object, `object_commit` set to the commit just obtained — enter a branch, are audited, and merge only on pass. This is exactly [Part 7's Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md), now spanning two worlds:
@@ -141,7 +143,7 @@ DATA BRANCH DIFF samples_stage AGAINST samples OUTPUT SUMMARY;   -- measured INS
 DATA BRANCH MERGE samples_stage INTO samples;                    -- publish only on full pass
 ```
 
-**Each side audits and merges atomically; whatever fails on either side doesn't reach the mainline.**
+**Each side audits and merges atomically within its own system.** But be clear: there is **no cross-system transaction** between lakeFS and MatrixOne — here the file side merges first, so if the metadata side then fails, lakeFS main has already moved. To truly get "if either side fails, neither publishes," you need a release coordinator: both sides first form immutable candidate versions, and only after a joint check do they publish the visible version through a versioned registry.
 
 ### Stop 2: Dedup — exact + perceptual, pure SQL, not one file touched
 
@@ -169,27 +171,37 @@ This is the sore spot of deep learning, foundation models especially: **one test
 -- how many training samples overlap the benchmark (by content)?
 SELECT COUNT(*) AS contaminated FROM samples s
 WHERE EXISTS (SELECT 1 FROM eval_hashes e WHERE e.content_hash = s.content_hash);
---   measured 1000 (500 benchmark originals + their re-crawled mirrors)
+--   measured 1000 (matching 500 benchmark content hashes: each benchmark image + its exact re-crawled copy)
 ```
 
-Note the exact hits are 500, but with mirrors it's 1000 — **decontamination must cover duplicates and near-duplicates**, or an escaped mirror feeds the benchmark into training anyway. That's why dedup and decontamination belong on the same metadata, done together.
+The 1000 rows this anti-join returns are all **exact `content_hash` matches** (500 unique benchmark hashes, each matching an original plus its exact copy). **Note it only covers exact content duplicates**: near-duplicates after cropping / compression / a watermark (a different `content_hash`, a close `phash`) won't be caught — to decontaminate those too, add a second anti-join on the benchmark's `phash`, the same way dedup does. The implementation here does exact decontamination only.
 
-### Stop 4: Integrity check — every sample needs a label and a live pointer
+### Stop 4: Integrity check — every sample needs a label, and a pointer that resolves to a real file
 
-To train an image classifier, each sample must satisfy at least two things: **it has a class label**, and **its pointer resolves to a file that actually exists**. The commonest breaks are labeling that didn't keep up (an image with no label), or a dangling pointer (pointing at an object that was deleted):
+To train an image classifier, each sample must satisfy at least two things: **it has a class label**, and **its pointer resolves to a file that actually exists**.
+
+The first is one SQL on the metadata:
 
 ```sql
 -- missing label: an image with no class label can't enter training this round
 SELECT COUNT(*) AS unlabeled FROM samples WHERE label IS NULL;
 --   measured 550
-
--- dangling pointer: the object the metadata points at is gone
-SELECT COUNT(*) AS dangling_pointer FROM samples
-WHERE object_uri IS NULL OR object_commit IS NULL;
---   measured 0
 ```
 
-Here's a trap between the file world and the metadata world: **deleting an object in lakeFS does not automatically delete the metadata rows pointing to it; and deleting a metadata row doesn't delete the file.** The two worlds are versioned independently, but consistency rides on discipline — an SQL sweep for dangling pointers and unlabeled samples before release is the cheapest integrity gate.
+The second needs care: **checking only that `object_uri` / `object_commit` are non-NULL proves the fields are filled, not that the file exists** (a non-existent commit, a wrong path, a deleted object all pass such a check). A real existence check has to ask lakeFS — the simplest way is to pull that commit's object listing into a table and anti-join the pointers against it:
+
+```sql
+-- import the commit's object listing into lakefs_objects(path), then anti-join
+SELECT COUNT(*) AS dangling FROM samples s
+WHERE NOT EXISTS (
+  SELECT 1 FROM lakefs_objects o
+  WHERE s.object_uri = CONCAT('lakefs://media/main/', o.path)
+);
+--   the companion run_practice.sh really runs this: it lists the commit's objects
+--   from lakeFS, imports them, and anti-joins — measured dangling = 0
+```
+
+This also surfaces the trap between the file world and the metadata world: **deleting an object in lakeFS does not automatically delete the metadata rows pointing to it; and deleting a metadata row doesn't delete the file.** The two worlds are versioned independently, and consistency rides on cross-world checks like this one.
 
 ### Stop 5: Relabel — the metadata evolves, the files don't budge
 
@@ -223,16 +235,22 @@ WHERE s.label IS NOT NULL
 --   measured train 38474 / valid 4934 / test 4935
 ```
 
-Then the key step — **pin the metadata snapshot together with the lakeFS commit**:
+Then the key step — **register the lakeFS commit first, then snapshot, so the binding is frozen inside the snapshot**. Order matters: write the registry first, take the snapshot second, so the binding lives in the frozen metadata version, not just in the mutable live database:
 
 ```sql
-CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
-
--- register "metadata version × file version" as an executable binding
+-- register the "metadata version × file version" binding first
+-- (the snapshot name is chosen up front, so the row can name it)
 INSERT INTO dataset_registry
 SELECT 'ic_v1', 'ic_dataset_v1', 'media', 'ba1693908b37…',
        COUNT(*), 'metadata snapshot × lakeFS commit = reproducible training set'
 FROM dataset_membership;
+
+-- then snapshot, freezing samples / dataset_membership / dataset_registry together
+CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
+
+-- the binding is now inside the snapshot (not just the live db):
+SELECT lakefs_commit FROM dataset_registry {SNAPSHOT='ic_dataset_v1'} WHERE dataset_version = 'ic_v1';
+--   -> ba1693908b37…
 ```
 
 From now on, "what data did ic_v1 use" is no longer a verbal description but a product: `ic_dataset_v1` (the metadata snapshot) names the samples, labels, and split, and `ba1693908b37…` (the lakeFS commit) names the files. And reproducing isn't just counting rows — you can fetch the **actual file** back: read a train sample's pointer and commit from the snapshot, then go to lakeFS at that commit (this is really run in the companion [`run_practice.sh`](https://github.com/matrixorigin/git4data-tutorial/blob/main/10-multimodal-lakefs/run_practice.sh)):
@@ -258,14 +276,14 @@ This part has to make the boundary clear, or it's easy to assume "one of them is
 
 **lakeFS manages the files.** It's git-style version control over object storage: branch / commit / merge on top of S3 / GCS / Azure, pinning "the state of object storage at a moment" as a commit you can return to; plus pre-merge hooks for file-level checks before a merge. It excels at versioning and rolling back **large file bodies**. What it doesn't do: treat tens of millions of metadata entries as a table to run SQL / JOIN / aggregate on, or tell you "between these two versions, which **rows'** labels changed."
 
-**MatrixOne's Git4Data capability manages the metadata.** It treats the metadata as a live, queryable table: row-level snapshot / branch / diff / merge / restore, JOIN-able, aggregate-able, anti-join-able any time. It excels at versioning, row-level comparison, and atomic publishing of **structured metadata**. What it doesn't do: store and version the file bodies of images/audio/video.
+**MatrixOne's Git4Data capability manages the metadata.** It treats the metadata as a live, queryable table: row-level snapshot / branch / diff / merge / restore, JOIN-able, aggregate-able, anti-join-able any time. It excels at versioning, row-level comparison, and atomic publishing of **structured metadata**. What it's not the right fit for: storing and versioning the file bodies of images/audio/video (it can hold BLOBs, but that's not economical).
 
 **How do they compose?** Via "a lakeFS commit recorded inside a metadata snapshot." At release, the MatrixOne side takes a database-scope metadata snapshot and writes the current lakeFS commit into a registry; to reproduce, you use both IDs together.
 
 | Object | Better suited to | What it owns | What it doesn't |
 |---|---|---|---|
 | Image / audio / video / large files | **lakeFS / object storage** | file versioning, rollback, pre-merge checks | row-level metadata query & diff |
-| Metadata: pointers, label, hash, split, source | **MatrixOne (Git4Data capability)** | row-level snapshot / branch / diff / merge / restore, JOIN & aggregate | storing the file bodies |
+| Metadata: pointers, label, hash, split, source | **MatrixOne (Git4Data capability)** | row-level snapshot / branch / diff / merge / restore, JOIN & aggregate | storing file bodies (BLOBs work, but aren't economical) |
 | Alignment of the two | **a binding in the registry** | metadata snapshot × lakeFS commit = reproducible training set | —— |
 
 This is more realistic than "hoping one tool manages both files and metadata well." Files have their optimal solution, the metadata has its own; the key is to **pin them together explicitly**.

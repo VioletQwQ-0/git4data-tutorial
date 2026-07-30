@@ -42,7 +42,7 @@
 
     <rect x="464"  y="248" width="120" height="82" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
     <text x="524"  y="284" fill="#E6EDF3" font-size="13" text-anchor="middle" font-weight="700">完整性</text>
-    <text x="524"  y="306" fill="#3FB950" font-size="10.5" text-anchor="middle">缺标签/指针</text>
+    <text x="524"  y="306" fill="#3FB950" font-size="10.5" text-anchor="middle">缺标签·存在</text>
 
     <rect x="604"  y="248" width="120" height="82" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
     <text x="664"  y="284" fill="#E6EDF3" font-size="13" text-anchor="middle" font-weight="700">重标注</text>

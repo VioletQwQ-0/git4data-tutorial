@@ -174,12 +174,21 @@ CREATE TABLE dataset_registry (
     metadata_snapshot VARCHAR(64),   -- the MatrixOne snapshot (metadata version)
     lakefs_repo      VARCHAR(64),
     lakefs_commit    VARCHAR(64),    -- the lakeFS commit (file version)
-    n_samples        BIGINT
+    n_samples        BIGINT,
+    note             VARCHAR(128)
 );
-CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
+-- Register the binding FIRST, then snapshot — so the lakeFS commit is INSIDE the
+-- metadata snapshot (not just in the mutable live database). The snapshot name is
+-- chosen up front, so the row can name the snapshot it is about to be frozen into.
 INSERT INTO dataset_registry
-SELECT 'ic_v1', 'ic_dataset_v1', 'media', 'commit-2026w30-d4e5f6', COUNT(*)
+SELECT 'ic_v1', 'ic_dataset_v1', 'media', 'commit-2026w30-d4e5f6', COUNT(*),
+       'metadata snapshot x lakeFS commit = reproducible training set'
 FROM dataset_membership;
+CREATE SNAPSHOT ic_dataset_v1 FOR DATABASE img_cls;
+
+-- the binding is now frozen INSIDE the snapshot (not just the live db):
+SELECT lakefs_commit FROM dataset_registry {SNAPSHOT='ic_dataset_v1'}
+WHERE dataset_version = 'ic_v1';   -- commit-2026w30-d4e5f6
 
 -- reproduce the exact train split months later, from the pinned metadata version
 SELECT COUNT(*) AS train_rows_v1

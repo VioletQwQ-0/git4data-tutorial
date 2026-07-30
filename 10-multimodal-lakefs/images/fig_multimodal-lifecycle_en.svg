@@ -43,7 +43,7 @@
 
     <rect x="464"  y="248" width="120" height="82" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
     <text x="524"  y="284" fill="#E6EDF3" font-size="12.5" text-anchor="middle" font-weight="700">Integrity</text>
-    <text x="524"  y="306" fill="#3FB950" font-size="10.5" text-anchor="middle">null label / dangling</text>
+    <text x="524"  y="306" fill="#3FB950" font-size="10.5" text-anchor="middle">null label / existence</text>
 
     <rect x="604"  y="248" width="120" height="82" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
     <text x="664"  y="284" fill="#E6EDF3" font-size="12.5" text-anchor="middle" font-weight="700">Relabel</text>
