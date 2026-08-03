@@ -1,0 +1,52 @@
+<svg viewBox="0 0 1200 470" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#161B22" stroke-width="1"/></pattern>
+    <marker id="ao" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0 0L7 3L0 6Z" fill="#F0883E"/></marker>
+  </defs>
+  <rect width="1200" height="470" fill="#0D1117"/><rect width="1200" height="470" fill="url(#g)"/>
+  <text x="44" y="40" fill="#E6EDF3" font-size="22" font-weight="700">Agent traces: logs alone can't explain — pin the dependencies to attribute</text>
+  <text x="44" y="64" fill="#F0883E" font-size="12.5" font-weight="700">A trace is an append-only log needing no diff / merge — what needs versioning is what it depended on</text>
+
+  <rect x="44" y="88" width="520" height="66" rx="10" fill="#0F1622" stroke="#21262D" stroke-width="1.2"/>
+  <text x="62" y="110" fill="#9DA7B3" font-size="11.5" font-weight="700">the foundation: pin what the comparison rests on</text>
+  <text x="62" y="132" fill="#A371F7" font-size="11">CREATE SNAPSHOT evalset_v1 …    CREATE SNAPSHOT mem_r1 …</text>
+  <text x="62" y="149" fill="#6E7681" font-size="10">freeze the eval set → the comparison is fair;  freeze memory → you can reconstruct what it knew</text>
+
+  <rect x="596" y="88" width="560" height="66" rx="10" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
+  <text x="614" y="110" fill="#E6EDF3" font-size="12" font-weight="700">headline: v1 vs v2 (the same 2,000 inputs)</text>
+  <text x="614" y="132" fill="#9DA7B3" font-size="11.5">v1   ok 97.5%   ·   1345 tok   ·   1100 ms</text>
+  <text x="614" y="150" fill="#F85149" font-size="11.5" font-weight="700">v2   ok 72.5%   ·   1645 tok   ·   1300 ms    ← down 25 points</text>
+
+  <text x="44" y="192" fill="#9DA7B3" font-size="12.5" font-weight="700">the attribution chain, in three SQL statements:</text>
+  <g>
+    <rect x="44"  y="204" width="250" height="60" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
+    <text x="169" y="228" fill="#E6EDF3" font-size="12" text-anchor="middle" font-weight="700">success rate drop</text>
+    <text x="169" y="250" fill="#F0883E" font-size="12" text-anchor="middle" font-weight="700">−25 pt</text>
+
+    <rect x="330" y="204" width="250" height="60" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
+    <text x="455" y="228" fill="#E6EDF3" font-size="12" text-anchor="middle" font-weight="700">regressed inputs</text>
+    <text x="455" y="250" fill="#F0883E" font-size="12" text-anchor="middle" font-weight="700">500</text>
+
+    <rect x="616" y="204" width="250" height="60" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
+    <text x="741" y="228" fill="#E6EDF3" font-size="12" text-anchor="middle" font-weight="700">concentrated where</text>
+    <text x="741" y="250" fill="#F0883E" font-size="12" text-anchor="middle" font-weight="700">technical 500 / 500</text>
+
+    <rect x="902" y="204" width="254" height="60" rx="8" fill="#10231A" stroke="#3FB950" stroke-width="1.5"/>
+    <text x="1029" y="228" fill="#E6EDF3" font-size="12" text-anchor="middle" font-weight="700">which tool broke</text>
+    <text x="1029" y="250" fill="#F85149" font-size="12" text-anchor="middle" font-weight="700">search_kb 2.5% → 27.5%</text>
+  </g>
+  <g stroke="#F0883E" stroke-width="1.6">
+    <line x1="296" y1="234" x2="326" y2="234" marker-end="url(#ao)"/>
+    <line x1="582" y1="234" x2="612" y2="234" marker-end="url(#ao)"/>
+    <line x1="868" y1="234" x2="898" y2="234" marker-end="url(#ao)"/>
+  </g>
+  <text x="600" y="288" fill="#6E7681" font-size="11" text-anchor="middle">from “production got worse” to “v2’s new retrieval path breaks search_kb on technical questions” — no log spelunking</text>
+
+  <rect x="44" y="308" width="1112" height="80" rx="10" fill="#161B22" stroke="#A371F7" stroke-width="1.4"/>
+  <text x="64" y="332" fill="#A371F7" font-size="12.5" font-weight="700">the fourth SQL: reconstruct what it knew at the time</text>
+  <text x="64" y="354" fill="#9DA7B3" font-size="11.5">runs.memory_snapshot = mem_r1   →   JOIN agent_memory {SNAPSHOT=mem_r1}   →   run 100001 read plan_tier = basic</text>
+  <text x="64" y="376" fill="#6E7681" font-size="11">the trace says what happened; the pinned memory version says what it was based on — together they answer why</text>
+
+  <text x="44" y="422" fill="#6E7681" font-size="11.5">There isn’t a single DATA BRANCH MERGE in this part, and that’s deliberate: a log should stay a log.</text>
+  <text x="44" y="444" fill="#6E7681" font-size="11.5">Measured on MatrixOne 4.1.0 using deterministic expressions (no rand()).</text>
+</svg>
