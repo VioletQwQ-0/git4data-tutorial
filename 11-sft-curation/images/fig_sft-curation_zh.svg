@@ -6,7 +6,7 @@
     <marker id="arrP" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0 0L7 3L0 6Z" fill="#A371F7"/></marker>
   </defs>
   <rect width="1200" height="470" fill="#0D1117"/><rect width="1200" height="470" fill="url(#g)"/>
-  <text x="44" y="40" fill="#E6EDF3" font-size="22" font-weight="700">一次 SFT data curation：在分支上下刀，每刀有数，DIFF 可审计</text>
+  <text x="44" y="40" fill="#E6EDF3" font-size="22" font-weight="700">一次 SFT data curation：在分支上过滤，每步先计数，DIFF 可审计</text>
 
   <!-- pool -->
   <rect x="44" y="80" width="150" height="72" rx="8" fill="#161B22" stroke="#30363D" stroke-width="1.4"/>
@@ -20,7 +20,7 @@
 
   <!-- six cuts -->
   <rect x="252" y="72" width="700" height="88" rx="10" fill="#0F1622" stroke="#21262D" stroke-width="1.2"/>
-  <text x="268" y="92" fill="#9DA7B3" font-size="11.5" font-weight="700">在分支上下六刀（每刀一条 SQL，先数后删）</text>
+  <text x="268" y="92" fill="#9DA7B3" font-size="11.5" font-weight="700">在分支上执行六步过滤（每步一条 SQL，先数后删）</text>
   <g font-size="11" text-anchor="middle">
     <text x="322" y="120" fill="#E6EDF3" font-weight="700">精确去重</text><text x="322" y="140" fill="#F0883E" font-weight="700">4,000</text>
     <text x="428" y="120" fill="#E6EDF3" font-weight="700">近重复</text><text x="428" y="140" fill="#F0883E" font-weight="700">3,000</text>
@@ -56,6 +56,6 @@
   <text x="648" y="356" fill="#6E7681" font-size="11">下一轮门槛 0.35→0.50，DIFF 再砍 12,514</text>
   <line x1="596" y1="335" x2="624" y2="335" stroke="#6E7681" stroke-width="1.5" marker-end="url(#arr)"/>
 
-  <text x="44" y="424" fill="#6E7681" font-size="11.5">质量分从哪来、门槛卡多少、配比怎么定，都由你决定；MatrixOne 的 Git4Data 能力保证的是：决策作用在确定版本上、每一刀可审计、做错能退回。</text>
+  <text x="44" y="424" fill="#6E7681" font-size="11.5">质量分从哪来、门槛卡多少、配比怎么定，都由你决定；MatrixOne 的 Git4Data 能力保证的是：决策作用在确定版本上、每一步可审计、做错能退回。</text>
   <text x="44" y="446" fill="#6E7681" font-size="11.5">数据实测于 MatrixOne 4.1.0。</text>
 </svg>

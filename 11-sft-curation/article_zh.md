@@ -8,7 +8,7 @@
 
 正因为量小，**每一条的质量、每一次的取舍，都会直接印在模型行为上**。而这些取舍，几乎全是人在做决定：这批合成数据留不留？这个来源的数据质量掉了要不要下架？code 和 chat 的比例调成多少？质量分的门槛卡在 0.35 还是 0.50？
 
-> 这一篇把一次完整的 SFT data curation 从头到尾做一遍：数据池长什么样、要下哪几刀、每一刀怎么留下审计记录、最后怎么发布成一个可复现的版本，以及业内其他做法各自卡在哪。文中 SQL 全部在 MatrixOne `4.1.0` 上实测，可跑版本见 [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) 的 `11-sft-curation/`。
+> 这一篇把一次完整的 SFT data curation 从头到尾做一遍：数据池长什么样、要用哪几步过滤、每一步怎么留下审计记录、最后怎么发布成一个可复现的版本，以及业内其他做法各自卡在哪。文中 SQL 全部在 MatrixOne `4.1.0` 上实测，可跑版本见 [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) 的 `11-sft-curation/`。
 
 ---
 
@@ -37,7 +37,7 @@ SFT 数据不一样。一条 SFT 样本长这样：
 修正某些回答              = UPDATE 一批行
 ```
 
-**每一刀都是一次行级变更**——这正是 Git4Data 这套能力最擅长的东西。于是整篇文章的主张可以先摆出来：
+**每一步过滤都是一次行级变更**——这正是 Git4Data 这套能力最擅长的东西。于是整篇文章的主张可以先摆出来：
 
 > **SFT curation 不该是一串跑完就没影的脚本，而应该是一次「在分支上做完、用 DIFF 留下审计记录、原子发布成一个版本」的受控变更。**
 
@@ -51,7 +51,7 @@ SFT 数据不一样。一条 SFT 样本长这样：
 
 如果 curation 是一串 Python 脚本跑完就完事，你能拿到的通常只有：清洗前 73 万条、清洗后 60 万条。中间少的那 13 万条是什么，谁也说不清——是去重删的？是质量分门槛卡掉的？还是某个 domain 被整体误删了？想复现 `sft-v6` 那一版数据集，更是无从下手，因为原始池这个月又进了新数据。
 
-这就是「可审计」的意义。curation 的每一刀都应该能回答三个问题：
+这就是「可审计」的意义。curation 的每一步过滤都应该能回答三个问题：
 
 1. **删了多少、删了哪些**（可审计）；
 2. **为什么删**（规则可查）；
@@ -86,7 +86,7 @@ CREATE TABLE sft_records (
 );
 ```
 
-两个 hash 列值得解释一下，它们是去重的两把不同的刀：
+两个 hash 列值得解释一下，它们对应两种不同的去重方式：
 
 - **`exact_hash`**：instruction + response 一起算哈希，抓的是**完全一样的样本**——同一条数据被两个供应商都卖给你了，或者同一批数据被导入了两次。
 - **`norm_hash`**：只对 instruction 做**归一化**（统一大小写、去掉多余标点和空白）后算哈希，抓的是**问题其实是同一个、但回答不同**的近重复——合成数据里这类特别多，同一个 prompt 被反复采样出好几个版本。
@@ -95,7 +95,7 @@ CREATE TABLE sft_records (
 
 ---
 
-## 在分支上做 curation：六刀，刀刀有数
+## 在分支上做 curation：六步过滤，每步先计数
 
 关键的第一步：**不要在数据池主表上直接删**。先拉一条分支，整轮 curation 都在分支上做——主池一行不动，随时可以对照、可以丢弃重来。这就是[第七篇 Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md) 的思路，用在 curation 上：
 
@@ -105,7 +105,7 @@ DATA BRANCH CREATE TABLE sft_curated FROM sft_records;
 
 分支是零拷贝的（[第三篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part3-under-the-hood-zh/index.md)讲过原理），所以哪怕池子有几百万条，这一步也是毫秒级、不产生数据副本。
 
-### 第一刀：精确去重
+### 第一步：精确去重
 
 同一条「指令 + 回答」在池子里出现多次，训练时会让模型对这条样本过度拟合。按 `exact_hash` 分组，每组只留 `record_id` 最小的一条：
 
@@ -121,7 +121,7 @@ WHERE record_id > (SELECT MIN(c2.record_id) FROM sft_curated c2
                    WHERE c2.exact_hash = sft_curated.exact_hash);
 ```
 
-### 第二刀：近重复去重
+### 第二步：近重复去重
 
 比精确重复更隐蔽、也更常见：**同一个问题，被合成了好几个不同的回答**。它们的 `exact_hash` 各不相同，但归一化后的 `norm_hash` 是一样的。留哪一条是个策略问题（这里取 `record_id` 最小；实践中更常见的是**留质量分最高的那条**）：
 
@@ -138,7 +138,7 @@ WHERE record_id > (SELECT MIN(c2.record_id) FROM sft_curated c2
 
 要说清楚边界：`norm_hash` 只能抓「归一化后完全相同」的近重复。**语义相同但措辞不同**的那一类（「什么是快照」vs「快照是什么意思」），哈希抓不到，需要向量相似度或 MinHash/SimHash 这类方法——它们能算出候选对，但**最终「删哪条、留哪条」仍然是一次行级删除**，照样走这里的流程。
 
-### 第三刀：质量门
+### 第三步：质量门
 
 空回答、被截断的生成、打分模型给出的低分样本，都要挡在训练之外：
 
@@ -152,7 +152,7 @@ DELETE FROM sft_curated WHERE resp_len < 10 OR quality_score < 0.35;
 
 注意这里的门槛（长度 10、质量分 0.35）**是这次 curation 的一个决策**，不是自然规律。它必须被记录下来——后面发布时会写进 curation 规则里，因为下一版很可能会调整它（本文最后就会调到 0.50）。
 
-### 第四刀：安全过滤
+### 第四步：安全过滤
 
 被安全分类器标记为不安全的样本直接剔除：
 
@@ -161,9 +161,9 @@ SELECT COUNT(*) AS unsafe FROM sft_curated WHERE is_safe = 0;   -- 实测 101
 DELETE FROM sft_curated WHERE is_safe = 0;
 ```
 
-### 第五刀：评测集去污染
+### 第五步：评测集去污染
 
-这是大模型 curation 里最要命的一刀。**如果评测基准里的题目混进了 SFT 训练集，模型是背下了答案，而不是学会了能力**——所有 benchmark 分数都会虚高，而且你不会收到任何报错。做法是拿评测集的 prompt 哈希做反连接：
+这是大模型 curation 里最要命的一步。**如果评测基准里的题目混进了 SFT 训练集，模型是背下了答案，而不是学会了能力**——所有 benchmark 分数都会虚高，而且你不会收到任何报错。做法是拿评测集的 prompt 哈希做反连接：
 
 ```sql
 SELECT COUNT(*) AS contaminated FROM sft_curated c
@@ -176,9 +176,9 @@ WHERE EXISTS (SELECT 1 FROM eval_prompts e WHERE e.norm_hash = sft_curated.norm_
 
 和[第十篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal-zh/index.md)一样要诚实说明：这条反连接匹配的是**归一化后完全相同**的 prompt。改写过、翻译过、换了表述的污染样本它抓不到——那需要在评测集上再建一层语义相似度检索。**哈希去污染是底线，不是全部。**
 
-### 第六刀：多轮对话完整性
+### 第六步：多轮对话完整性
 
-这一刀是 SFT 特有的，也是最容易被脚本漏掉的。**多轮对话必须整体进、整体出**：如果第 2 轮因为回答被截断而在第三刀里被删了，只剩第 1、3 轮的对话是**残缺且有害**的——模型会学到跳跃、不连贯的对话结构。
+这一步是 SFT 特有的，也是最容易被脚本漏掉的。**多轮对话必须整体进、整体出**：如果第 2 轮因为回答被截断而在第三步里被删了，只剩第 1、3 轮的对话是**残缺且有害**的——模型会学到跳跃、不连贯的对话结构。
 
 所以在所有过滤之后，要再扫一遍：哪些 `conv_id` 的轮次不完整了，整组删掉：
 
@@ -196,11 +196,11 @@ DELETE FROM sft_curated WHERE conv_id IN (
 );
 ```
 
-**这就是为什么 curation 的顺序很重要**：完整性检查必须放在所有过滤之后，因为它要清理的正是前面几刀造成的连带损伤。
+**这就是为什么 curation 的顺序很重要**：完整性检查必须放在所有过滤之后，因为它要清理的正是前面几步造成的连带损伤。
 
-六刀过后：**实测 73,000 → 59,671 行**。
+六步过后：**实测 73,000 → 59,671 行**。
 
-![一次 SFT data curation：从 73,000 行的数据池拉一条零拷贝分支，在分支上下六刀（精确去重 4000、近重复 3000、质量门 5184、安全 101、评测去污染 744、多轮完整性 300），DIFF 给出审计记录 DELETED 13329，再先登记 registry、后打快照发布成 59,671 行的 sft_v1](./images/fig_sft-curation_zh.svg)
+![一次 SFT data curation：从 73,000 行的数据池拉一条零拷贝分支，在分支上执行六步过滤（精确去重 4000、近重复 3000、质量门 5184、安全 101、评测去污染 744、多轮完整性 300），DIFF 给出审计记录 DELETED 13329，再先登记 registry、后打快照发布成 59,671 行的 sft_v1](./images/fig_sft-curation_zh.svg)
 
 ---
 
@@ -213,7 +213,7 @@ DATA BRANCH DIFF sft_curated AGAINST sft_records OUTPUT SUMMARY;
 --   实测 INSERTED 0 / DELETED 13329 / UPDATED 0
 ```
 
-`13329` 这个数字不是估算，它就是六刀之和：`4000 + 3000 + 5184 + 101 + 744 + 300 = 13329`。**主池一行没动，而这一轮的全部影响被压缩成一行摘要。**
+`13329` 这个数字不是估算，它就是六步之和：`4000 + 3000 + 5184 + 101 + 744 + 300 = 13329`。**主池一行没动，而这一轮的全部影响被压缩成一行摘要。**
 
 比总数更有用的是，你随时可以把差异**展开到行**——想知道具体删了哪些、某个 domain 被删了多少、某个来源是不是被砍得特别狠，都是普通 SQL：
 
@@ -290,7 +290,7 @@ SELECT COUNT(*) AS v2_rows FROM sft_v2_wip;   -- 实测 47157
 SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 59671
 ```
 
-于是「`sft-v7` 在代码题上掉点」这个开头的问题，现在有了可执行的排查路径：把 v7 用的数据快照和 v6 的 DIFF 一下，看 code 域少了哪些行、是被哪一刀删的。**模型的退步，第一次能落到具体的数据变更上。**
+于是「`sft-v7` 在代码题上掉点」这个开头的问题，现在有了可执行的排查路径：把 v7 用的数据快照和 v6 的 DIFF 一下，看 code 域少了哪些行、是被哪一步删的。**模型的退步，第一次能落到具体的数据变更上。**
 
 ---
 
@@ -319,7 +319,7 @@ SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 596
 | 数仓 SQL（Spark 等） | 否（表版本级） | **SQL** ✅ | 是 | 建新表 | 每版一张表 |
 | **MatrixOne（Git4Data 能力）** | **是（`DATA BRANCH DIFF`）** | **SQL** ✅ | **是（快照）** | **零拷贝分支，丢弃即可** | **无** |
 
-一句话：其他做法要么把筛选逻辑锁在脚本里、结果只剩一个文件（脚本类），要么能版本化却看不到行级语义（文件版本工具），要么能用 SQL 筛却没有原生的分支 / 行级 diff（数仓）。MatrixOne 的不同在于**这三件事在同一张表上同时成立**：curation 用 SQL 写、在零拷贝分支上试、每一刀的结果由 `DATA BRANCH DIFF` 出具审计记录、通过后原子发布并快照。
+一句话：其他做法要么把筛选逻辑锁在脚本里、结果只剩一个文件（脚本类），要么能版本化却看不到行级语义（文件版本工具），要么能用 SQL 筛却没有原生的分支 / 行级 diff（数仓）。MatrixOne 的不同在于**这三件事在同一张表上同时成立**：curation 用 SQL 写、在零拷贝分支上试、每一步的结果由 `DATA BRANCH DIFF` 出具审计记录、通过后原子发布并快照。
 
 ---
 
@@ -329,7 +329,7 @@ SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 596
 
 - **哈希去重和哈希去污染都是底线，不是全部。** 语义级的近重复和改写过的污染样本，需要向量检索或 MinHash 这类方法先算出候选；但候选算出来之后的「删哪些行」，仍然回到本文这套行级流程。
 
-- **多轮对话的完整性要显式检查。** 它不会自己成立，而且必须放在所有过滤之后——本文实测的那 300 行就是前面几刀的连带损伤。
+- **多轮对话的完整性要显式检查。** 它不会自己成立，而且必须放在所有过滤之后——本文实测的那 300 行就是前面几步的连带损伤。
 
 - **快照有保留成本。** 每个上线模型对应的 `sft_vN` 建议长期保留，废弃的中间试验版本要设清理策略，否则历史版本会一直占着存储。
 

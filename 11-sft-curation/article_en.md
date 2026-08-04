@@ -8,7 +8,7 @@ First, where it sits. A large model usually goes through three stages: **pretrai
 
 Precisely because it's small, **every record's quality and every curation decision imprints directly on model behavior.** And those decisions are almost all human calls: do we keep this batch of synthetic data? a vendor's quality dropped — do we pull their data? what's the right code-to-chat ratio? is the quality bar 0.35 or 0.50?
 
-> This part runs one complete SFT data curation pass end to end: what the pool looks like, which cuts to make, how each cut leaves an audit record, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
+> This part runs one complete SFT data curation pass end to end: what the pool looks like, which filters to apply, how each one leaves an audit record, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
 
 ---
 
@@ -37,7 +37,7 @@ rebalance the domain mix      = selectively DELETE / keep
 fix some responses            = UPDATE some rows
 ```
 
-**Every cut is a row-level change** — exactly what the Git4Data capability is best at. So the thesis up front:
+**Every filter is a row-level change** — exactly what the Git4Data capability is best at. So the thesis up front:
 
 > **SFT curation shouldn't be a script that runs and vanishes. It should be a controlled change: done on a branch, audited by a DIFF, published atomically as a version.**
 
@@ -51,7 +51,7 @@ After `sft-v7` ships, the team finds it noticeably worse than `sft-v6` on coding
 
 If curation is a pile of Python scripts that run and finish, what you typically have is: 730k records before, 600k after. What those missing 130k were, nobody can say — deduped? cut by the quality bar? did an entire domain get dropped by mistake? And reproducing the dataset `sft-v6` used is hopeless, because the raw pool has taken in new data since.
 
-That is what auditable means here. Every cut in curation should answer three questions:
+That is what auditable means here. Every filter in curation should answer three questions:
 
 1. **how many, and which ones** (auditable);
 2. **why** (the rule is on record);
@@ -86,7 +86,7 @@ CREATE TABLE sft_records (
 );
 ```
 
-The two hash columns deserve a note — they're two different knives:
+The two hash columns deserve a note — they catch two different kinds of duplicate:
 
 - **`exact_hash`**: hashes instruction + response together, catching **identical samples** — the same record sold to you by two vendors, or one batch imported twice.
 - **`norm_hash`**: hashes only the **normalized** instruction (unified case, stripped punctuation and whitespace), catching **near-duplicates where the question is the same but the answer differs** — extremely common in synthetic data, where one prompt gets sampled several times.
@@ -95,7 +95,7 @@ The case pool: 60,000 single-turn samples + 4,000 exact duplicates + 3,000 near-
 
 ---
 
-## Curate on a branch: six cuts, each with a number
+## Curate on a branch: six filters, each counted first
 
 The first move matters: **don't delete on the pool's main table**. Branch first and do the whole pass on the branch — the pool doesn't move a row, and you can compare against it or throw the attempt away at any time. That's [Part 7's Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md) applied to curation:
 
@@ -105,7 +105,7 @@ DATA BRANCH CREATE TABLE sft_curated FROM sft_records;
 
 The branch is zero-copy ([Part 3](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part3-under-the-hood/index.md) explains why), so even for a multi-million-row pool this is a millisecond operation that copies no data.
 
-### Cut 1: exact duplicates
+### Filter 1: exact duplicates
 
 The same "instruction + response" appearing several times makes the model overfit that sample. Group by `exact_hash`, keep the lowest `record_id` in each group:
 
@@ -121,7 +121,7 @@ WHERE record_id > (SELECT MIN(c2.record_id) FROM sft_curated c2
                    WHERE c2.exact_hash = sft_curated.exact_hash);
 ```
 
-### Cut 2: near-duplicates
+### Filter 2: near-duplicates
 
 Subtler and more common: **one question with several different synthesized answers.** Their `exact_hash` values all differ, but the normalized `norm_hash` is the same. Which one to keep is a policy choice (here the lowest `record_id`; in practice **keeping the highest quality score** is more common):
 
@@ -138,7 +138,7 @@ WHERE record_id > (SELECT MIN(c2.record_id) FROM sft_curated c2
 
 Be clear about the boundary: `norm_hash` only catches near-duplicates that are **identical after normalization**. The **semantically equivalent but differently worded** kind ("what is a snapshot" vs "what does snapshot mean") escapes a hash and needs vector similarity or MinHash/SimHash. Those methods produce candidate pairs — but the final "which row to drop" is still a row-level delete, and still runs through this same flow.
 
-### Cut 3: the quality gate
+### Filter 3: the quality gate
 
 Empty responses, truncated generations, and low scores from the scoring model all stay out of training:
 
@@ -152,7 +152,7 @@ DELETE FROM sft_curated WHERE resp_len < 10 OR quality_score < 0.35;
 
 Note that these thresholds (length 10, score 0.35) **are a decision of this curation pass**, not a law of nature. They must be recorded — they'll go into the curation rule at release, because the next version will very likely change them (we raise it to 0.50 at the end of this article).
 
-### Cut 4: safety
+### Filter 4: safety
 
 Samples flagged unsafe by the classifier are removed:
 
@@ -161,9 +161,9 @@ SELECT COUNT(*) AS unsafe FROM sft_curated WHERE is_safe = 0;   -- measured 101
 DELETE FROM sft_curated WHERE is_safe = 0;
 ```
 
-### Cut 5: benchmark decontamination
+### Filter 5: benchmark decontamination
 
-The most dangerous cut in large-model curation. **If benchmark questions leak into the SFT training set, the model memorized the answers rather than learning the ability** — every benchmark number inflates, and nothing errors out. The move is an anti-join against the eval set's prompt hashes:
+The most dangerous filter in large-model curation. **If benchmark questions leak into the SFT training set, the model memorized the answers rather than learning the ability** — every benchmark number inflates, and nothing errors out. The move is an anti-join against the eval set's prompt hashes:
 
 ```sql
 SELECT COUNT(*) AS contaminated FROM sft_curated c
@@ -176,9 +176,9 @@ WHERE EXISTS (SELECT 1 FROM eval_prompts e WHERE e.norm_hash = sft_curated.norm_
 
 The same honesty as [Part 10](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal/index.md) applies: this anti-join matches prompts that are **identical after normalization**. Rewritten, translated, or reworded contamination escapes it — catching that needs a semantic-similarity layer over the eval set. **Hash decontamination is the floor, not the ceiling.**
 
-### Cut 6: multi-turn integrity
+### Filter 6: multi-turn integrity
 
-This cut is specific to SFT, and the one scripts most often miss. **A multi-turn conversation must enter and leave as a whole**: if turn 2 was dropped by cut 3 because its response was truncated, a conversation left with only turns 1 and 3 is **broken and harmful** — the model learns jumpy, incoherent dialogue structure.
+This filter is specific to SFT, and the one scripts most often miss. **A multi-turn conversation must enter and leave as a whole**: if turn 2 was dropped by filter 3 because its response was truncated, a conversation left with only turns 1 and 3 is **broken and harmful** — the model learns jumpy, incoherent dialogue structure.
 
 So after every filter, sweep once more: which `conv_id`s no longer have all their turns, and drop those whole:
 
@@ -196,11 +196,11 @@ DELETE FROM sft_curated WHERE conv_id IN (
 );
 ```
 
-**This is why curation order matters**: the integrity check must come after all the filters, because what it cleans up is precisely the collateral damage they caused.
+**This is why curation order matters**: the integrity check must come after all the filters, because what it cleans up is precisely the collateral damage the earlier filters caused.
 
-After six cuts: **73,000 → 59,671 rows, measured.**
+After six filters: **73,000 → 59,671 rows, measured.**
 
-![One SFT curation pass: from a 73,000-row pool, take a zero-copy branch, make six cuts on it (exact dup 4000, near dup 3000, quality 5184, safety 101, decontamination 744, conversation integrity 300), the DIFF audit record showing DELETED 13329, then register first and snapshot to publish sft_v1 at 59,671 rows](./images/fig_sft-curation_en.svg)
+![One SFT curation pass: from a 73,000-row pool, take a zero-copy branch, apply six filters on it (exact dup 4000, near dup 3000, quality 5184, safety 101, decontamination 744, conversation integrity 300), the DIFF audit record showing DELETED 13329, then register first and snapshot to publish sft_v1 at 59,671 rows](./images/fig_sft-curation_en.svg)
 
 ---
 
@@ -213,7 +213,7 @@ DATA BRANCH DIFF sft_curated AGAINST sft_records OUTPUT SUMMARY;
 --   measured INSERTED 0 / DELETED 13329 / UPDATED 0
 ```
 
-`13329` isn't an estimate; it's the sum of the six cuts: `4000 + 3000 + 5184 + 101 + 744 + 300 = 13329`. **The pool never moved a row, and this pass's entire impact compresses into one summary line.**
+`13329` isn't an estimate; it's the sum of the six filters: `4000 + 3000 + 5184 + 101 + 744 + 300 = 13329`. **The pool never moved a row, and this pass's entire impact compresses into one summary line.**
 
 More useful than the total: you can expand the difference **down to rows** at any time — which ones went, how much a given domain lost, whether one source got hit unusually hard — all of it ordinary SQL:
 
@@ -290,7 +290,7 @@ Meanwhile v1 remains queryable, untouched:
 SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- measured 59671
 ```
 
-So the opening problem — "`sft-v7` regressed on coding" — now has an executable investigation path: DIFF the data snapshot v7 used against v6's, see which code-domain rows disappeared and which cut removed them. **For the first time, a model regression lands on specific data changes.**
+So the opening problem — "`sft-v7` regressed on coding" — now has an executable investigation path: DIFF the data snapshot v7 used against v6's, see which code-domain rows disappeared and which filter removed them. **For the first time, a model regression lands on specific data changes.**
 
 ---
 
@@ -319,7 +319,7 @@ Put in one table:
 | Warehouse SQL (Spark, …) | no (table-version level) | **SQL** ✅ | yes | new table | one table per version |
 | **MatrixOne (Git4Data capability)** | **yes (`DATA BRANCH DIFF`)** | **SQL** ✅ | **yes (snapshot)** | **zero-copy branch, just drop it** | **none** |
 
-In one line: the other approaches either lock the filtering logic in scripts and leave you a file (the script family), or version the data without row-level semantics (file-version tools), or let you filter in SQL without native branching and row-level diff (warehouses). What's different about MatrixOne is that **all three hold on one table at once**: curation written in SQL, tried on a zero-copy branch, each cut recorded by `DATA BRANCH DIFF`, then published atomically and snapshotted.
+In one line: the other approaches either lock the filtering logic in scripts and leave you a file (the script family), or version the data without row-level semantics (file-version tools), or let you filter in SQL without native branching and row-level diff (warehouses). What's different about MatrixOne is that **all three hold on one table at once**: curation written in SQL, tried on a zero-copy branch, each filter recorded by `DATA BRANCH DIFF`, then published atomically and snapshotted.
 
 ---
 
@@ -329,7 +329,7 @@ In one line: the other approaches either lock the filtering logic in scripts and
 
 - **Hash dedup and hash decontamination are the floor, not the ceiling.** Semantic near-duplicates and reworded contamination need vector retrieval or MinHash-style methods to produce candidates first; but once candidates exist, "which rows to drop" comes right back to the row-level flow here.
 
-- **Multi-turn integrity must be checked explicitly.** It doesn't hold by itself, and it has to come after every filter — the 300 rows measured here were collateral damage from the earlier cuts.
+- **Multi-turn integrity must be checked explicitly.** It doesn't hold by itself, and it has to come after every filter — the 300 rows measured here were collateral damage from the earlier filters.
 
 - **Snapshots have retention cost.** Keep the `sft_vN` for each shipped model long-term, and set a cleanup policy for abandoned trial versions, or historical versions will hold storage indefinitely.
 
