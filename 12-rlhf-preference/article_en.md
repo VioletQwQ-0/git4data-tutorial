@@ -1,12 +1,61 @@
 # MatrixOne Git4Data Deep Dive (Part 12) · Large Models — RLHF Preference Data: Disagreement, Adjudication, Reproducibility
 
-In [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) we ran a full SFT curation pass: six cuts on a branch, each counted, a DIFF as the audit record, registry before snapshot at release. This part moves one step further down the large-model training chain, into **preference alignment** — the **preference data** that RLHF / DPO depends on.
+In [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) we ran a full SFT curation pass: six filters on a branch, each counted first, a DIFF as the audit record, registry before snapshot at release. This part moves one step further down the large-model training chain, into **preference alignment** — the **preference data** that RLHF / DPO depends on.
 
 As [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) explained, SFT teaches a model to answer the way people expect. But SFT has a ceiling: it can learn "this is a good answer," not "**between these two decent answers, which one is better.**" And the latter is exactly what pushes a model from usable to good. That's what preference alignment is for: have humans (or models) compare candidate responses, train a **reward model** on those comparisons, and use it to steer the policy model.
 
 So the shape of the training data changes once again — and this time more fundamentally than in any earlier part.
 
 > This part makes clear what's special about preference data, the ways it breaks (degenerate pairs, no consensus, preference cycles, length bias), how to adjudicate disagreement between annotators, and how a preference dataset gets bound to a reward model as a reproducible pair. All SQL is verified on MatrixOne `4.1.0`, and **everything is deterministic** (no `rand()`), so every number reproduces run to run; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `12-rlhf-preference/`.
+
+---
+
+## The whole picture first: the eight stages a preference dataset passes through
+
+As in the last part, lay out the chain before drilling in. A batch of preference data goes through these stages between being produced and actually changing model behaviour:
+
+```text
+① generate ─▶ ② pair & assign ─▶ ③ annotate ─▶ ④ derive pairs ─▶ ⑤ audit & curate
+                                                                        │
+                        ⑧ train RM → policy opt → evaluate ◀── ⑦ release ◀── ⑥ adjudicate
+                                        │
+                                        └──── more labels / new rule / new bar ──▶ back to ③④⑤
+```
+
+**① Generate**: sample several candidate responses per prompt, from different policy versions and temperatures. **This is where every later bias is seeded** — if one policy version is naturally verbose, its answers will be systematically longer.
+
+**② Pair & assign**: decide which candidates get compared and who labels them. The labeling platform's territory.
+
+**③ Annotate**: annotators (or an LLM judge) pick a winner in each pair. **Note this step produces votes, not the dataset itself.**
+
+**④ Derive pairs**: compute `(chosen, rejected)` from the votes by a rule — how is the majority defined? do ties count? where's the agreement bar? **The rule is itself a decision; a different bar is a different dataset.**
+
+**⑤ Audit & curate**: find degenerate pairs, no-consensus pairs, and preference cycles; measure length bias.
+
+**⑥ Adjudicate**: send the 2:1 splits to senior reviewers. **Several reviewers overturning the same batch in parallel — what happens on conflict?**
+
+**⑦ Release**: freeze a definite version and bind it to the reward model about to be trained.
+
+**⑧ Train RM → policy optimization → evaluate**: the reward model feeds PPO/DPO, and after evaluation you go back for more labels or a new rule — returning to ③④⑤. **And a symptom like "the policy model started padding its answers" usually takes three layers of backtracking to attribute.**
+
+### Which of these eight stages belong to data version control
+
+Same boundary first: ① belongs to the policy model, ② to the labeling platform, ⑧ to the RL training framework and evaluation — **the Git4Data capability touches none of those judgments.** It handles the middle: how votes become a dataset, how that dataset is audited and adjudicated, and how it freezes into a version traceable from the reward model.
+
+| Stage | The real problem | How MatrixOne's Git4Data capability helps |
+|---|---|---|
+| ③ Annotate | store only the verdict and the votes are gone forever | votes land **as-is and enter the snapshot**, so re-deriving is always possible |
+| ④ Derive pairs | a different bar is a different dataset, but the rule leaves no trace | the derivation rule goes in a **registry**, frozen with the version |
+| ⑤ Audit & curate | degenerate pairs and cycles can only be hunted by ad-hoc scripts | relational SQL on a **branch**; one `DIFF` produces the audit record |
+| ⑥ Adjudicate | several reviewers edit the same rows — whose verdict counts | one **branch** each; `MERGE` **surfaces conflicts explicitly**, or `PICK` takes only adjudicated rows |
+| ⑦ Release | the dataset training reads keeps changing | a database **`SNAPSHOT`** freezes it; the registry binds **RM ← dataset** |
+| ⑧ Trace back | a policy-model symptom can't be traced to the preference data | follow `rm_vN → pref_vN → snapshot`, and `DIFF` across versions |
+
+In one line: **preference data needs relational queries (find cycles, find degenerate pairs, compute bias), row-level version semantics (who overturned which rows), and conflict semantics (two reviewers disagreed) at the same time — and all three are the same thing on the same table.**
+
+From here the article focuses on **③ → ⑦**, walking from raw votes all the way to release.
+
+![The eight stages of preference data: generate → pair & assign → annotate → derive pairs → audit & curate → adjudicate → release → train the reward model, with evaluation feeding more labels and rule changes back into ③④⑤; votes enter the snapshot as-is, the derivation rule goes in a registry, auditing uses branch+DIFF, adjudication uses branches with conflict/PICK, release snapshots and binds the RM, and tracing back uses a cross-version DIFF — while the policy model, labeling platform and RL framework sit outside the Git4Data capability](./images/fig_rlhf-pipeline_en.svg)
 
 ---
 
@@ -49,7 +98,7 @@ Change the threshold and the same votes produce a different dataset. Which means
 
 ## A failure that really happens: the reward model learns "longer is better"
 
-Here's a classic and well-hidden RLHF failure.
+Here's a classic and well-hidden RLHF failure mode.
 
 The team trains reward model `rm_v1`, hooks up PPO, and runs policy optimization. A few rounds in, the responses get **longer and longer**, more padded — while the reward score climbs steadily. Humans reading them think they got worse.
 
@@ -130,7 +179,7 @@ FROM (
 --   measured: 21,000 pairs
 ```
 
-The distribution of agreement rates is this dataset's first health check:
+The distribution of agreement rates is this dataset's first quality metric:
 
 ```sql
 SELECT agree_rate, COUNT(*) AS n FROM preference_pairs GROUP BY agree_rate ORDER BY agree_rate;
@@ -165,7 +214,7 @@ WHERE c1.response = c2.response;
 
 Note this check **must JOIN back to the candidates table** — looking at `preference_pairs` alone can't find it, because `chosen_id` and `rejected_id` are two different IDs and only the body text reveals they're identical. That's a direct consequence of preference data being relational.
 
-### Check 2: no consensus — the annotators effectively flipped a coin
+### Check 2: no consensus — three people gave three different answers
 
 An agreement rate of 0.333 means three people gave three different answers. Such a pair trains no useful signal; it's pure noise:
 
@@ -188,7 +237,7 @@ This problem is unique to preference data, and the most interesting. Each judgme
         └────── C
 ```
 
-Where do they come from? Usually not from careless annotators, but because different pairs were judged by **different people**, or because the three responses are genuinely close and the comparison criteria differ in subtle ways (one person values accuracy, another concision). **A cycle's existence is itself evidence that this group of comparisons is unreliable.**
+Where do they come from? Usually not from careless annotators, but because different pairs were judged by **different people**, or because the three responses are genuinely of comparable quality and the comparison criteria differ in subtle ways (one person values accuracy, another concision). **A cycle's existence is itself evidence that this group of comparisons is unreliable.**
 
 If a reward model ingests a cycle, it's being told A>B>C>A simultaneously — it can only learn a mediocre compromise out of the contradiction. Detection is a three-way self-join within one prompt:
 
@@ -203,7 +252,7 @@ WHERE p3.rejected_id = p1.chosen_id;
 
 Two ways to handle it: **drop the whole cycle** (what this article does — clean), or **send it back for re-adjudication** (more expensive, but keeps the hard samples). Either way, the prerequisite is that you **can find them**.
 
-### Check 4: length bias — this cut doesn't delete, it *looks*
+### Check 4: length bias — this step doesn't delete, it measures
 
 This is where the "reward model learns that longer is better" failure gets caught:
 
@@ -363,7 +412,7 @@ In one line: preference data needs **relational queries** (find cycles, find deg
 
 ## Closing
 
-Preference data is the **softest link** in the whole large-model training chain: it isn't collected fact but a conclusion derived from a pile of human judgments; its smallest unit isn't a row but a pair; and it breaks not by missing fields but by **contradicting itself (preference cycles) or systematically favoring a shortcut feature (length bias)**.
+Preference data is the link in the whole large-model training chain that **rests most on subjective judgment**: it isn't collected fact but a conclusion derived from a pile of human judgments; its smallest unit isn't a row but a pair; and it breaks not by missing fields but by **contradicting itself (preference cycles) or systematically favoring a shortcut feature (length bias)**.
 
 Which is exactly why it needs to be queryable, adjudicable, and reproducible: **of 21,000 pairs, 630 were caught in preference cycles, 2,000 reached no consensus at all, and 75.9% of chosen responses were longer than rejected** — three numbers, each one SQL away, and each one that should be seen before the reward model starts training. The 985 and 657 verdicts two reviewers overturned in parallel had their conflicts surfaced at merge rather than silently overwritten. And in the end `rm_v1` and `pref_v1` are bound inside the same snapshot, with all 63,000 raw votes frozen alongside — so re-deriving under a different rule is always one query away.
 
