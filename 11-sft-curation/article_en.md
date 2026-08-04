@@ -8,7 +8,53 @@ First, where it sits. A large model usually goes through three stages: **pretrai
 
 Precisely because it's small, **every record's quality and every curation decision imprints directly on model behavior.** And those decisions are almost all human calls: do we keep this batch of synthetic data? a vendor's quality dropped — do we pull their data? what's the right code-to-chat ratio? is the quality bar 0.35 or 0.50?
 
-> This part runs one complete SFT data curation pass end to end: what the pool looks like, which filters to apply, how each one leaves an audit record, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
+> This part first walks the whole SFT data chain and where the Git4Data capability helps at each stage, then runs one complete curation pass end to end: what the pool looks like, which filters to apply, how each one leaves an audit record, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
+
+---
+
+## The whole picture first: the eight stages an SFT record passes through
+
+Before drilling into any detail, lay out the whole chain. A batch of SFT data goes through these stages between arriving at the team and actually being consumed by the model:
+
+```text
+① acquire ─▶ ② pool ─▶ ③ score ─▶ ④ curate ─▶ ⑤ mix ─▶ ⑥ release ─▶ ⑦ train ─▶ ⑧ evaluate
+                          ▲                                                            │
+                          └────────  add data / move the bar / rebalance  ◀────────────┘
+```
+
+**① Acquire**: purchased from vendors, synthesized by a model, written by humans, or mined from production logs. Quality varies enormously between channels, and you often buy the same batch twice.
+
+**② Pool**: unify sources and formats into one table, tagged with source and batch. **The first trap appears right here** — if a new batch is written straight into the main pool, any problem in it is instantly mixed with hundreds of thousands of good records.
+
+**③ Score**: a scoring model or heuristics assign a quality score to each record; a safety classifier flags risk. Note that the scoring model has versions too — the same record can get different scores at different times.
+
+**④ Curate**: dedup, apply a quality bar, filter unsafe content, remove overlap with the eval set, keep multi-turn conversations whole. **This is the stage that deletes the most and is the least transparent.**
+
+**⑤ Mix**: decide the proportions across domains, sources, and languages. An explicit modeling decision that frequently goes unrecorded.
+
+**⑥ Release**: freeze the filtered data into a definite version for training. **The problem is that training reads "the pool as it was then," and the pool keeps changing.**
+
+**⑦ Train** → **⑧ Evaluate**: with metrics in hand, go back and adjust — add data, move the bar, rebalance — returning to ③④⑤ for another round. **And what exactly differs between this round's data and the last is usually something nobody can state.**
+
+![The eight stages of SFT data: acquire → pool → score → curate → mix → release → train → evaluate, with evaluation feeding back into scoring, curation and mixing for another round; pooling uses branch+MERGE, scores enter the snapshot, curation uses branch+DIFF, mixing uses SQL stats plus a registry, release takes a database snapshot, and iteration uses a cross-version DIFF — while the scoring model, modeling strategy, training framework and evaluation system are outside the Git4Data capability](./images/fig_sft-pipeline_en.svg)
+
+### Which of these eight stages belong to data version control
+
+Let's be clear about the boundary: ③ scoring belongs to the scoring model, ⑤ mixing belongs to modeling strategy, and ⑦⑧ belong to the training framework and the evaluation system. **The Git4Data capability doesn't touch those judgments.** It handles a different layer — how data **enters this chain, gets changed, and gets frozen into a version**:
+
+| Stage | The real problem | How MatrixOne's Git4Data capability helps |
+|---|---|---|
+| ② Pool | new batch, quality unknown, mustn't poison the pool | new data lands on a **branch**, `MERGE` only on pass; the pool never moves |
+| ③ Score | the scoring model changes versions, so scores shift | scores enter a **snapshot** with the data — "which version of scores this used" stays queryable |
+| ④ Curate | what was deleted, why, and can it be undone — all unclear | filter on a **branch**; one `DATA BRANCH DIFF` gives the full audit record |
+| ⑤ Mix | the mix is a decision that leaves no trace | compute the mix in SQL before release; freeze the rule in a **registry** with the version |
+| ⑥ Release | the pool training reads keeps changing | a database-scope **`CREATE SNAPSHOT`** freezes the version for bit-for-bit reproduction |
+| ⑧ Iterate | data differences between two model versions can't be attributed | **`DIFF`** two snapshots — down to exactly which rows, removed by which filter |
+| Anything goes wrong | a bad change can't be undone | **`RESTORE`** to any historical version |
+
+The table in one line: **SQL decides whether the data is good enough; the Git4Data capability provides the isolated workspace, the stable version anchor, and the auditable change record those decisions run on.**
+
+From here the article focuses on the heaviest stage, **④ curation**, threading ②, ⑤, and ⑥ through one complete pass.
 
 ---
 
