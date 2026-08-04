@@ -1,6 +1,6 @@
 # MatrixOne Git4Data Deep Dive (Part 13) · Agents — Reversible Memory: When the Agent Writes the Data
 
-Across the first twelve parts we took Git4Data through [data operations](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md), [classical machine learning](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md), [deep learning's file-based data](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal/index.md), and large models' [SFT](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) and [RLHF preference data](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part12-rlhf-preference/index.md).
+Across the first twelve parts we took MatrixOne's Git4Data capability through [data operations](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md), [classical machine learning](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md), [deep learning's file-based data](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal/index.md), and large models' [SFT](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) and [RLHF preference data](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part12-rlhf-preference/index.md).
 
 From here we enter the final tier: **agents**. And this tier differs from everything before it in one fundamental way —
 
@@ -53,7 +53,7 @@ When someone finally notices months later, the hard part is:
 3. **What else did that conversation write?** Unknown — no way to sweep for it.
 4. **Can we undo everything that conversation wrote?** No — it's mixed in with hundreds of thousands of good rows.
 
-Those four questions map exactly onto four Git4Data capabilities: **provenance, audit, rollback, and DIFF**.
+Those four questions map exactly onto four things the Git4Data capability provides: **provenance, audit, rollback, and DIFF**.
 
 ---
 
@@ -146,7 +146,7 @@ WHERE m.mem_id < 500000 AND m.status = 'active'
 
 **A contradiction shouldn't be treated as an error and deleted.** People change: the customer really may have changed their preference. The right handling is **both facts coexist, the old one marked stale** — so the agent uses the latest belief while the record of "it once believed otherwise" survives. You only appreciate how valuable that history is when you have to investigate why the agent answered a certain way back in March.
 
-The post-audit receipt, then the merge:
+The post-audit audit record, then the merge:
 
 ```sql
 DATA BRANCH DIFF memory_staging AGAINST agent_memory OUTPUT SUMMARY;
@@ -158,7 +158,7 @@ DATA BRANCH MERGE memory_staging INTO agent_memory;
 --   measured memory 40,000 → 42,469; active 42,263, superseded 206
 ```
 
-![The agent-memory flow: the 40,000-fact store never moves while session run_9001 proposes 3,000 facts on a branch; the audit finds 300 contradictions (marked superseded) plus 428 low-confidence and 120 untraceable (rejected); after merge the DIFF receipt reads INSERTED 2469 / UPDATED 206 and the store reaches 42,469; run_9002 poisons 5,000 facts and one RESTORE returns them to zero; provenance columns make who-wrote-what-when queryable](./images/fig_agent-memory_en.svg)
+![The agent-memory flow: the 40,000-fact store never moves while session run_9001 proposes 3,000 facts on a branch; the audit finds 300 contradictions (marked superseded) plus 428 low-confidence and 120 untraceable (rejected); after merge the DIFF audit record reads INSERTED 2469 / UPDATED 206 and the store reaches 42,469; run_9002 poisons 5,000 facts and one RESTORE returns them to zero; provenance columns make who-wrote-what-when queryable](./images/fig_agent-memory_en.svg)
 
 ---
 
@@ -219,7 +219,7 @@ SELECT COUNT(*) AS facts_at_mem_v1 FROM agent_memory {SNAPSHOT='mem_v1'};
 
 ## Boundaries and applicability
 
-- **Memory auditing isn't content moderation.** The confidence threshold, how contradictions get resolved, what counts as "shouldn't be remembered" — all your policy. Git4Data guarantees those policies act on a controlled branch, every write is on record, and mistakes roll back.
+- **Memory auditing isn't content moderation.** The confidence threshold, how contradictions get resolved, what counts as "shouldn't be remembered" — all your policy. The Git4Data capability guarantees those policies act on a controlled branch, every write is on record, and mistakes roll back.
 
 - **Not every memory deserves a branch.** High-frequency, low-risk memory (in-session scratch context) is only burdened by this flow. **What earns it is long-term memory** — the facts that get read again and again and shape every later interaction.
 

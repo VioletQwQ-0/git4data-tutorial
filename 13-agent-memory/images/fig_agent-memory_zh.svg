@@ -37,7 +37,7 @@
   <line x1="432" y1="125" x2="452" y2="125" stroke="#6E7681" stroke-width="1.5" marker-end="url(#a)"/>
 
   <rect x="44" y="196" width="864" height="52" rx="10" fill="#10231A" stroke="#3FB950" stroke-width="1.5"/>
-  <text x="64" y="218" fill="#3FB950" font-size="12.5" font-weight="700">合并后的收据 · DATA BRANCH DIFF</text>
+  <text x="64" y="218" fill="#3FB950" font-size="12.5" font-weight="700">合并后的审计记录 · DATA BRANCH DIFF</text>
   <text x="64" y="238" fill="#9DA7B3" font-size="11">INSERTED 2,469（531 条被拒） / UPDATED 206（旧事实标记过期）　→ 记忆库 40,000 → 42,469</text>
   <line x1="476" y1="170" x2="476" y2="194" stroke="#3FB950" stroke-width="1.6" marker-end="url(#ag)"/>
 
@@ -54,5 +54,5 @@
   <text x="520" y="364" fill="#9DA7B3" font-size="11">能撤销吗 → 按 source_run 批量撤 / 整库 RESTORE</text>
 
   <text x="44" y="412" fill="#6E7681" font-size="11.5">矛盾不删新的、而是把旧事实标记过期——人是会变的，保留历史才查得清「Agent 三月份为什么那样回答」。</text>
-  <text x="44" y="434" fill="#6E7681" font-size="11.5">置信门槛、矛盾裁决策略由你定；Git4Data 保证写入可审计、可溯源、可回滚。数据实测于 MatrixOne 4.1.0。</text>
+  <text x="44" y="434" fill="#6E7681" font-size="11.5">置信门槛、矛盾裁决策略由你定；MatrixOne 的 Git4Data 能力保证写入可审计、可溯源、可回滚。数据实测于 MatrixOne 4.1.0。</text>
 </svg>

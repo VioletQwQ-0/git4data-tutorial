@@ -1,6 +1,6 @@
 # MatrixOne Git4Data 技术详解（十三）·Agent 篇：可回滚的记忆——当写数据的是 Agent 自己
 
-前十二篇，我们把 Git4Data 一路带过了[数据运维](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md)、[传统机器学习](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)、[深度学习的文件型数据](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal-zh/index.md)，以及大模型的 [SFT](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation-zh/index.md) 和 [RLHF 偏好数据](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part12-rlhf-preference-zh/index.md)。
+前十二篇，我们把 MatrixOne 的 Git4Data 能力一路带过了[数据运维](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md)、[传统机器学习](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)、[深度学习的文件型数据](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal-zh/index.md)，以及大模型的 [SFT](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation-zh/index.md) 和 [RLHF 偏好数据](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part12-rlhf-preference-zh/index.md)。
 
 从这一篇起，进入最后一档：**Agent**。这一档和前面所有篇章有一个根本区别——
 
@@ -53,7 +53,7 @@ cust_1042 · preferred_channel · 不要联系我
 3. **同一次对话还写了别的什么？** 不知道，无从批量排查。
 4. **能不能把那次对话写的全部撤销？** 不能，它们和几十万条正常记忆混在一起。
 
-这四个问题，正好对应 Git4Data 的四件事：**溯源、审计、回滚、DIFF**。
+这四个问题，正好对应 Git4Data 能力的四件事：**溯源、审计、回滚、DIFF**。
 
 ---
 
@@ -145,7 +145,7 @@ WHERE m.mem_id < 500000 AND m.status = 'active'
 
 **矛盾不该被当成错误删掉**。人是会变的：客户真的可能改了偏好。矛盾的正确处理是**新旧并存、旧的标记为过期**——这样既让 Agent 用上最新认知，又保留了"它曾经这么认为过"的历史。只有当你需要排查"Agent 为什么在三月份那样回答"时，才会明白这段历史有多值钱。
 
-审计后的收据和合并：
+审计后的审计记录和合并：
 
 ```sql
 DATA BRANCH DIFF memory_staging AGAINST agent_memory OUTPUT SUMMARY;
@@ -156,7 +156,7 @@ DATA BRANCH MERGE memory_staging INTO agent_memory;
 --   实测记忆库 40,000 → 42,469；其中 active 42,263、superseded 206
 ```
 
-![Agent 记忆全流程：40,000 条事实的记忆库不动，会话 run_9001 在分支上提议 3,000 条；审计出矛盾 300（标记 superseded）、低置信 428 与无溯源 120（拒绝）；合并后 DIFF 收据 INSERTED 2469 / UPDATED 206，记忆库到 42,469；run_9002 污染 5,000 条后一条 RESTORE 归零；溯源列让「谁在什么时候写了什么」都可查](./images/fig_agent-memory_zh.svg)
+![Agent 记忆全流程：40,000 条事实的记忆库不动，会话 run_9001 在分支上提议 3,000 条；审计出矛盾 300（标记 superseded）、低置信 428 与无溯源 120（拒绝）；合并后 DIFF 审计记录 INSERTED 2469 / UPDATED 206，记忆库到 42,469；run_9002 污染 5,000 条后一条 RESTORE 归零；溯源列让「谁在什么时候写了什么」都可查](./images/fig_agent-memory_zh.svg)
 
 ---
 
@@ -217,7 +217,7 @@ SELECT COUNT(*) AS facts_at_mem_v1 FROM agent_memory {SNAPSHOT='mem_v1'};
 
 ## 边界与适用范围
 
-- **记忆审计不是内容审核。** 置信度门槛、矛盾如何裁决、什么算"不该记住的信息"，都是你的策略。Git4Data 保证的是：这些策略作用在可控的分支上、每次写入有据可查、错了能退回。
+- **记忆审计不是内容审核。** 置信度门槛、矛盾如何裁决、什么算"不该记住的信息"，都是你的策略。Git4Data 能力保证的是：这些策略作用在可控的分支上、每次写入有据可查、错了能退回。
 
 - **不是每条记忆都值得走分支。** 高频、低风险的记忆（比如会话内的临时上下文）走分支反而累赘。**值得上这套流程的是长期记忆**——那些会被反复读取、影响后续所有交互的事实。
 

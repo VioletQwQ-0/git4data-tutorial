@@ -186,7 +186,7 @@ SELECT COUNT(*) AS eval_inputs_at_v1 FROM eval_inputs {SNAPSHOT='evalset_v1'};  
 
 ---
 
-## Being clear about what Git4Data does and doesn't do here
+## Being clear about what MatrixOne does and doesn't do here
 
 This part has to draw the boundary explicitly, or it's easy to oversell:
 

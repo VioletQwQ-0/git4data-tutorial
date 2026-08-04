@@ -1,6 +1,6 @@
 # MatrixOne Git4Data Deep Dive (Part 12) · Large Models — RLHF Preference Data: Disagreement, Adjudication, Reproducibility
 
-In [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) we ran a full SFT curation pass: six cuts on a branch, each counted, a DIFF as the receipt, registry before snapshot at release. This part moves one step further down the large-model training chain, into **preference alignment** — the **preference data** that RLHF / DPO depends on.
+In [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) we ran a full SFT curation pass: six cuts on a branch, each counted, a DIFF as the audit record, registry before snapshot at release. This part moves one step further down the large-model training chain, into **preference alignment** — the **preference data** that RLHF / DPO depends on.
 
 As [Part 11](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part11-sft-curation/index.md) explained, SFT teaches a model to answer the way people expect. But SFT has a ceiling: it can learn "this is a good answer," not "**between these two decent answers, which one is better.**" And the latter is exactly what pushes a model from usable to good. That's what preference alignment is for: have humans (or models) compare candidate responses, train a **reward model** on those comparisons, and use it to steer the policy model.
 
@@ -221,11 +221,11 @@ JOIN candidates c2 ON p.rejected_id = c2.cand_id;
 
 **75.9%.** Meaning: if you guessed purely by "pick the longer one," you'd be right three times in four — of course the reward model learns that shortcut first.
 
-To be explicit: **this step should not delete data.** Longer answers genuinely are better sometimes, and cutting them bluntly destroys real signal along with the bias. It is a **signal that must be seen**, and the options include stratified sampling by length, explicit length de-biasing in the reward model, or accepting it and watching length as a separate metric at evaluation. **Git4Data's job is to guarantee this number gets seen before release — not to decide what to do about it.**
+To be explicit: **this step should not delete data.** Longer answers genuinely are better sometimes, and cutting them bluntly destroys real signal along with the bias. It is a **signal that must be seen**, and the options include stratified sampling by length, explicit length de-biasing in the reward model, or accepting it and watching length as a separate metric at evaluation. **The Git4Data capability's job is to guarantee this number gets seen before release — not to decide what to do about it.**
 
 ---
 
-## The receipt: what this round actually changed
+## The audit record: what this round actually changed
 
 ```sql
 DATA BRANCH DIFF pairs_curated AGAINST preference_pairs OUTPUT SUMMARY;
@@ -234,7 +234,7 @@ DATA BRANCH DIFF pairs_curated AGAINST preference_pairs OUTPUT SUMMARY;
 
 `2830 = 200 (degenerate) + 2000 (no consensus) + 630 (cycles)`, and the pool's 21,000 pairs never moved a row. **18,170** pairs go on to the next step.
 
-![The preference-data flow: 63,000 raw votes derive 21,000 preference pairs by majority, agreement distribution 15000/4000/2000; audited on a branch — degenerate 200, no consensus 2000, cycles 630 all dropped, while 75.9% length bias is audited not deleted; DIFF receipt DELETED 2830 leaving 18,170; two reviewers overturn 985 and 657 on their own branches with conflicts skipped; finally register-then-snapshot publishes pref_v1 bound to rm_v1, freezing all 63,000 raw votes with it](./images/fig_rlhf-preference_en.svg)
+![The preference-data flow: 63,000 raw votes derive 21,000 preference pairs by majority, agreement distribution 15000/4000/2000; audited on a branch — degenerate 200, no consensus 2000, cycles 630 all dropped, while 75.9% length bias is audited not deleted; DIFF audit record DELETED 2830 leaving 18,170; two reviewers overturn 985 and 657 on their own branches with conflicts skipped; finally register-then-snapshot publishes pref_v1 bound to rm_v1, freezing all 63,000 raw votes with it](./images/fig_rlhf-preference_en.svg)
 
 ---
 
@@ -335,7 +335,7 @@ A few common ways preference data gets managed:
 
 **Approach 4: derive and audit in a warehouse (Spark / BigQuery).** Aggregating votes, finding cycles, computing length bias in SQL — this path matches this article exactly, and is a common choice at larger teams. The difference is again version semantics: keeping each version means new tables or table versions, **row-level branch / DIFF / conflict merge isn't native**, and "several reviewers overturning verdicts in parallel, with conflicts surfaced explicitly" is very hard to express with table versions.
 
-| Approach | Votes & product in one version | Row-level receipt | Parallel adjudication & conflict | Relational audit (cycles / degenerate) | Re-derive under a new rule |
+| Approach | Votes & product in one version | Row-level audit record | Parallel adjudication & conflict | Relational audit (cycles / degenerate) | Re-derive under a new rule |
 |---|---|---|---|---|---|
 | Platform JSONL export | no (chain broken) | no | inside the platform, invisible outside | another script | re-export from the platform |
 | Votes in platform + product in warehouse | no (two systems) | no | inside the platform | partial (product side) | versions don't line up |
@@ -355,7 +355,7 @@ In one line: preference data needs **relational queries** (find cycles, find deg
 
 - **Don't "fix" length bias by deleting data.** Cutting the "chosen is longer" samples removes real signal along with the bias. The audit's value is making it visible; how to de-bias is a modeling decision.
 
-- **Git4Data makes no semantic judgments.** Which answer is better, where the threshold sits, how cycles get handled — your decisions. What it guarantees: votes and product in one version, every overturn on record, conflicts surfaced explicitly, any historical version reproducible.
+- **The Git4Data capability makes no semantic judgments.** Which answer is better, where the threshold sits, how cycles get handled — your decisions. What it guarantees: votes and product in one version, every overturn on record, conflicts surfaced explicitly, any historical version reproducible.
 
 - **Keep the raw votes long-term.** They're this dataset's source code. Delete them and you permanently lose the ability to re-derive under a new rule.
 

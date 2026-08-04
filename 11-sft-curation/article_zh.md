@@ -1,6 +1,6 @@
-# MatrixOne Git4Data 技术详解（十一）·大模型篇：SFT 数据 curation——每一刀都要有收据
+# MatrixOne Git4Data 技术详解（十一）·大模型篇：SFT 数据 curation——可审计、可复现的数据清洗
 
-前十篇里，我们把 Git4Data 从概念一路带到了 AI 训练现场：[前四篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part1-data-at-scale-zh/index.md)建立技术坐标，第五到第七篇是数据运维（[误操作救援](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part5-incident-rescue-zh/index.md)、[多人协作](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part6-collaborative-dev-zh/index.md)、[Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md)），第八、九篇讲传统机器学习（[全流程总图](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)、[数据集发布与泄漏](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part9-dataset-release-zh/index.md)），[第十篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal-zh/index.md)转向深度学习的文件型数据，让 lakeFS 管文件、MatrixOne 管元数据。
+前十篇里，我们把 MatrixOne 的 Git4Data 能力从概念一路带到了 AI 训练现场：[前四篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part1-data-at-scale-zh/index.md)建立技术坐标，第五到第七篇是数据运维（[误操作救援](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part5-incident-rescue-zh/index.md)、[多人协作](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part6-collaborative-dev-zh/index.md)、[Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish-zh/index.md)），第八、九篇讲传统机器学习（[全流程总图](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle-zh/index.md)、[数据集发布与泄漏](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part9-dataset-release-zh/index.md)），[第十篇](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal-zh/index.md)转向深度学习的文件型数据，让 lakeFS 管文件、MatrixOne 管元数据。
 
 这一篇进入**大模型**。具体说，是大模型训练里最讲究、也最依赖人工判断的一步：**SFT（Supervised Fine-Tuning，监督微调）的数据 curation**。
 
@@ -8,7 +8,7 @@
 
 正因为量小，**每一条的质量、每一次的取舍，都会直接印在模型行为上**。而这些取舍，几乎全是人在做决定：这批合成数据留不留？这个来源的数据质量掉了要不要下架？code 和 chat 的比例调成多少？质量分的门槛卡在 0.35 还是 0.50？
 
-> 这一篇把一次完整的 SFT data curation 从头到尾做一遍：数据池长什么样、要下哪几刀、每一刀怎么留下收据、最后怎么发布成一个可复现的版本，以及业内其他做法各自卡在哪。文中 SQL 全部在 MatrixOne `4.1.0` 上实测，可跑版本见 [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) 的 `11-sft-curation/`。
+> 这一篇把一次完整的 SFT data curation 从头到尾做一遍：数据池长什么样、要下哪几刀、每一刀怎么留下审计记录、最后怎么发布成一个可复现的版本，以及业内其他做法各自卡在哪。文中 SQL 全部在 MatrixOne `4.1.0` 上实测，可跑版本见 [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) 的 `11-sft-curation/`。
 
 ---
 
@@ -37,13 +37,13 @@ SFT 数据不一样。一条 SFT 样本长这样：
 修正某些回答              = UPDATE 一批行
 ```
 
-**每一刀都是一次行级变更**——这正是 Git4Data 最擅长的东西。于是整篇文章的主张可以先摆出来：
+**每一刀都是一次行级变更**——这正是 Git4Data 这套能力最擅长的东西。于是整篇文章的主张可以先摆出来：
 
-> **SFT curation 不该是一串跑完就没影的脚本，而应该是一次「在分支上做完、留下 DIFF 收据、原子发布成一个版本」的受控变更。**
+> **SFT curation 不该是一串跑完就没影的脚本，而应该是一次「在分支上做完、用 DIFF 留下审计记录、原子发布成一个版本」的受控变更。**
 
 ---
 
-## 为什么“每一刀都要有收据”这么重要
+## 为什么 curation 必须可审计
 
 先看一个几乎每个大模型团队都遇到过的场景。
 
@@ -51,7 +51,7 @@ SFT 数据不一样。一条 SFT 样本长这样：
 
 如果 curation 是一串 Python 脚本跑完就完事，你能拿到的通常只有：清洗前 73 万条、清洗后 60 万条。中间少的那 13 万条是什么，谁也说不清——是去重删的？是质量分门槛卡掉的？还是某个 domain 被整体误删了？想复现 `sft-v6` 那一版数据集，更是无从下手，因为原始池这个月又进了新数据。
 
-这就是「收据」的意义。curation 的每一刀都应该能回答三个问题：
+这就是「可审计」的意义。curation 的每一刀都应该能回答三个问题：
 
 1. **删了多少、删了哪些**（可审计）；
 2. **为什么删**（规则可查）；
@@ -200,13 +200,13 @@ DELETE FROM sft_curated WHERE conv_id IN (
 
 六刀过后：**实测 73,000 → 59,671 行**。
 
-![一次 SFT data curation：从 73,000 行的数据池拉一条零拷贝分支，在分支上下六刀（精确去重 4000、近重复 3000、质量门 5184、安全 101、评测去污染 744、多轮完整性 300），DIFF 出收据 DELETED 13329，再先登记 registry、后打快照发布成 59,671 行的 sft_v1](./images/fig_sft-curation_zh.svg)
+![一次 SFT data curation：从 73,000 行的数据池拉一条零拷贝分支，在分支上下六刀（精确去重 4000、近重复 3000、质量门 5184、安全 101、评测去污染 744、多轮完整性 300），DIFF 给出审计记录 DELETED 13329，再先登记 registry、后打快照发布成 59,671 行的 sft_v1](./images/fig_sft-curation_zh.svg)
 
 ---
 
-## 收据：一条 DIFF 说清这一轮到底删了什么
+## 审计记录：一条 DIFF 说清这一轮到底删了什么
 
-整轮 curation 做完，最重要的动作来了——**要一张收据**：
+整轮 curation 做完，最重要的动作来了——**留下这一轮的审计记录**：
 
 ```sql
 DATA BRANCH DIFF sft_curated AGAINST sft_records OUTPUT SUMMARY;
@@ -269,7 +269,7 @@ SELECT n_records FROM dataset_registry {SNAPSHOT='sft_v1'} WHERE dataset_version
 
 ---
 
-## 下一轮：v2 的收据，和 v1 的可复现
+## 下一轮：v2 的审计记录，和 v1 的可复现
 
 几周后，团队决定收紧质量门槛——从 0.35 提到 0.50。同样的流程再走一遍，而这一次，**DIFF 直接告诉你这个决策的代价**：
 
@@ -310,7 +310,7 @@ SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 596
 
 放进一张表里：
 
-| 做法 | 行级收据（删了哪些） | 筛选逻辑在哪 | 版本可复现 | 试错成本 | 额外副本 |
+| 做法 | 行级审计记录（删了哪些） | 筛选逻辑在哪 | 版本可复现 | 试错成本 | 额外副本 |
 |---|---|---|---|---|---|
 | Python 脚本 + 输出文件 | 无 | 脚本 | 靠自觉 | 重跑全流程 | 每版一份 |
 | 脚本 + 存中间产物 | 半（靠比对文件） | 脚本 | 是 | 重跑 | **N 倍** |
@@ -319,13 +319,13 @@ SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 596
 | 数仓 SQL（Spark 等） | 否（表版本级） | **SQL** ✅ | 是 | 建新表 | 每版一张表 |
 | **MatrixOne（Git4Data 能力）** | **是（`DATA BRANCH DIFF`）** | **SQL** ✅ | **是（快照）** | **零拷贝分支，丢弃即可** | **无** |
 
-一句话：其他做法要么把筛选逻辑锁在脚本里、结果只剩一个文件（脚本类），要么能版本化却看不到行级语义（文件版本工具），要么能用 SQL 筛却没有原生的分支 / 行级 diff（数仓）。MatrixOne 的不同在于**这三件事在同一张表上同时成立**：curation 用 SQL 写、在零拷贝分支上试、每一刀的结果由 `DATA BRANCH DIFF` 出具收据、通过后原子发布并快照。
+一句话：其他做法要么把筛选逻辑锁在脚本里、结果只剩一个文件（脚本类），要么能版本化却看不到行级语义（文件版本工具），要么能用 SQL 筛却没有原生的分支 / 行级 diff（数仓）。MatrixOne 的不同在于**这三件事在同一张表上同时成立**：curation 用 SQL 写、在零拷贝分支上试、每一刀的结果由 `DATA BRANCH DIFF` 出具审计记录、通过后原子发布并快照。
 
 ---
 
 ## 边界与适用范围
 
-- **Git4Data 不替你判断质量。** 质量分从哪来（打分模型、规则、人工）、门槛卡在哪、配比怎么定，都是你的决策。它保证的是：这些决策作用在确定的数据版本上、结果可审计、做错了能退回。
+- **Git4Data 这套能力不替你判断质量。** 质量分从哪来（打分模型、规则、人工）、门槛卡在哪、配比怎么定，都是你的决策。它保证的是：这些决策作用在确定的数据版本上、结果可审计、做错了能退回。
 
 - **哈希去重和哈希去污染都是底线，不是全部。** 语义级的近重复和改写过的污染样本，需要向量检索或 MinHash 这类方法先算出候选；但候选算出来之后的「删哪些行」，仍然回到本文这套行级流程。
 
@@ -341,6 +341,6 @@ SELECT COUNT(*) AS v1_rows FROM sft_records {SNAPSHOT='sft_v1'};   -- 实测 596
 
 SFT 是大模型里数据量最小、但单条价值最高的一段。正因如此，curation 的每一次取舍都会直接印在模型行为上——而这些取舍，长期以来是整条链路上**最不透明**的一环：一串脚本跑完，池子小了一大截，至于删了什么、为什么删、能不能退回，全靠人的记忆和纪律。
 
-把它换成「分支上做、DIFF 出收据、原子发布、快照冻结」之后，这一环就变成了和代码评审一样可控的东西：**73,000 → 59,671，中间那 13,329 条的去向，一条 SQL 就能说清楚**；把门槛从 0.35 提到 0.50 要付出 21% 的数据量，这个代价在训练开始之前就摆在桌面上；而任何一个历史版本，随时可以逐位复原。
+把它换成「分支上做、DIFF 留审计记录、原子发布、快照冻结」之后，这一环就变成了和代码评审一样可控的东西：**73,000 → 59,671，中间那 13,329 条的去向，一条 SQL 就能说清楚**；把门槛从 0.35 提到 0.50 要付出 21% 的数据量，这个代价在训练开始之前就摆在桌面上；而任何一个历史版本，随时可以逐位复原。
 
 > 📎 可运行 SQL：[github.com/matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) ｜ 源码与社区：[github.com/matrixorigin/matrixone](https://github.com/matrixorigin/matrixone)

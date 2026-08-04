@@ -239,7 +239,7 @@ Fifteen parts in, the conclusion is plain: **once data changes frequently and th
 
 - **The rollback point must be human-set.** `cfg_v7` is a safe target because a human confirmed it. If the agent also chooses the fallback, the seatbelt is decorative.
 
-- **Git4Data makes no decisions.** What to propose, where the bar sits, whether to ship — your policy. What it guarantees: each proposal is tried in isolation, every change is auditable, and any version can be rolled back.
+- **The Git4Data capability makes no decisions.** What to propose, where the bar sits, whether to ship — your policy. What it guarantees: each proposal is tried in isolation, every change is auditable, and any version can be rolled back.
 
 ---
 

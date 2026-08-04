@@ -1,6 +1,6 @@
-# MatrixOne Git4Data Deep Dive (Part 11) · Large Models — SFT Data Curation: Every Cut Needs a Receipt
+# MatrixOne Git4Data Deep Dive (Part 11) · Large Models — SFT Data Curation: Auditable and Reproducible
 
-Across the first ten parts we took Git4Data from concept to the AI training floor: the [first four](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part1-data-at-scale/index.md) built the coordinate system, parts five through seven covered data operations ([incident rescue](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part5-incident-rescue/index.md), [parallel collaboration](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part6-collaborative-dev/index.md), [Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md)), parts eight and nine covered classical machine learning (the [whole-pipeline map](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md), [dataset release & leakage](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part9-dataset-release/index.md)), and [Part 10](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal/index.md) turned to deep learning's file-based data, with lakeFS for the files and MatrixOne for the metadata.
+Across the first ten parts we took MatrixOne's Git4Data capability from concept to the AI training floor: the [first four](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part1-data-at-scale/index.md) built the coordinate system, parts five through seven covered data operations ([incident rescue](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part5-incident-rescue/index.md), [parallel collaboration](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part6-collaborative-dev/index.md), [Write-Audit-Publish](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part7-write-audit-publish/index.md)), parts eight and nine covered classical machine learning (the [whole-pipeline map](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part8-ml-lifecycle/index.md), [dataset release & leakage](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part9-dataset-release/index.md)), and [Part 10](https://github.com/matrixorigin/matrixorigin-blog/blob/main/matrixorigin/git4data-part10-multimodal/index.md) turned to deep learning's file-based data, with lakeFS for the files and MatrixOne for the metadata.
 
 This part enters **large models** — specifically the step that leans hardest on human judgment: **SFT (Supervised Fine-Tuning) data curation**.
 
@@ -8,7 +8,7 @@ First, where it sits. A large model usually goes through three stages: **pretrai
 
 Precisely because it's small, **every record's quality and every curation decision imprints directly on model behavior.** And those decisions are almost all human calls: do we keep this batch of synthetic data? a vendor's quality dropped — do we pull their data? what's the right code-to-chat ratio? is the quality bar 0.35 or 0.50?
 
-> This part runs one complete SFT data curation pass end to end: what the pool looks like, which cuts to make, how each cut leaves a receipt, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
+> This part runs one complete SFT data curation pass end to end: what the pool looks like, which cuts to make, how each cut leaves an audit record, how to publish it as a reproducible version, and where the industry's other approaches get stuck. All SQL is verified on MatrixOne `4.1.0`; the runnable version lives in [matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) under `11-sft-curation/`.
 
 ---
 
@@ -37,13 +37,13 @@ rebalance the domain mix      = selectively DELETE / keep
 fix some responses            = UPDATE some rows
 ```
 
-**Every cut is a row-level change** — exactly what Git4Data is best at. So the thesis up front:
+**Every cut is a row-level change** — exactly what the Git4Data capability is best at. So the thesis up front:
 
-> **SFT curation shouldn't be a script that runs and vanishes. It should be a controlled change: done on a branch, leaving a DIFF as its receipt, published atomically as a version.**
+> **SFT curation shouldn't be a script that runs and vanishes. It should be a controlled change: done on a branch, audited by a DIFF, published atomically as a version.**
 
 ---
 
-## Why "every cut needs a receipt" matters
+## Why curation has to be auditable
 
 Here's a scene almost every large-model team has lived through.
 
@@ -51,7 +51,7 @@ After `sft-v7` ships, the team finds it noticeably worse than `sft-v6` on coding
 
 If curation is a pile of Python scripts that run and finish, what you typically have is: 730k records before, 600k after. What those missing 130k were, nobody can say — deduped? cut by the quality bar? did an entire domain get dropped by mistake? And reproducing the dataset `sft-v6` used is hopeless, because the raw pool has taken in new data since.
 
-That's what a receipt is for. Every cut in curation should answer three questions:
+That is what auditable means here. Every cut in curation should answer three questions:
 
 1. **how many, and which ones** (auditable);
 2. **why** (the rule is on record);
@@ -200,13 +200,13 @@ DELETE FROM sft_curated WHERE conv_id IN (
 
 After six cuts: **73,000 → 59,671 rows, measured.**
 
-![One SFT curation pass: from a 73,000-row pool, take a zero-copy branch, make six cuts on it (exact dup 4000, near dup 3000, quality 5184, safety 101, decontamination 744, conversation integrity 300), DIFF the receipt DELETED 13329, then register first and snapshot to publish sft_v1 at 59,671 rows](./images/fig_sft-curation_en.svg)
+![One SFT curation pass: from a 73,000-row pool, take a zero-copy branch, make six cuts on it (exact dup 4000, near dup 3000, quality 5184, safety 101, decontamination 744, conversation integrity 300), the DIFF audit record showing DELETED 13329, then register first and snapshot to publish sft_v1 at 59,671 rows](./images/fig_sft-curation_en.svg)
 
 ---
 
-## The receipt: one DIFF says exactly what this pass removed
+## The audit record: one DIFF says exactly what this pass removed
 
-With the pass complete, the important move — **ask for the receipt**:
+With the pass complete, the important move — **record what it did**:
 
 ```sql
 DATA BRANCH DIFF sft_curated AGAINST sft_records OUTPUT SUMMARY;
@@ -269,7 +269,7 @@ SELECT n_records FROM dataset_registry {SNAPSHOT='sft_v1'} WHERE dataset_version
 
 ---
 
-## The next round: v2's receipt, and v1 still reproducible
+## The next round: v2's audit record, and v1 still reproducible
 
 Weeks later the team decides to tighten the quality bar — from 0.35 to 0.50. Same flow again, and this time **the DIFF tells you what that decision costs**:
 
@@ -310,7 +310,7 @@ Making SFT curation "auditable, reproducible, reversible" has a few common paths
 
 Put in one table:
 
-| Approach | Row-level receipt (which rows) | Where the filtering lives | Version reproducible | Cost of a failed attempt | Extra copies |
+| Approach | Row-level audit record (which rows) | Where the filtering lives | Version reproducible | Cost of a failed attempt | Extra copies |
 |---|---|---|---|---|---|
 | Python scripts + output file | none | scripts | on discipline | re-run everything | one per version |
 | Scripts + intermediate artifacts | partial (by diffing files) | scripts | yes | re-run | **N×** |
@@ -319,13 +319,13 @@ Put in one table:
 | Warehouse SQL (Spark, …) | no (table-version level) | **SQL** ✅ | yes | new table | one table per version |
 | **MatrixOne (Git4Data capability)** | **yes (`DATA BRANCH DIFF`)** | **SQL** ✅ | **yes (snapshot)** | **zero-copy branch, just drop it** | **none** |
 
-In one line: the other approaches either lock the filtering logic in scripts and leave you a file (the script family), or version the data without row-level semantics (file-version tools), or let you filter in SQL without native branching and row-level diff (warehouses). What's different about MatrixOne is that **all three hold on one table at once**: curation written in SQL, tried on a zero-copy branch, each cut receipted by `DATA BRANCH DIFF`, then published atomically and snapshotted.
+In one line: the other approaches either lock the filtering logic in scripts and leave you a file (the script family), or version the data without row-level semantics (file-version tools), or let you filter in SQL without native branching and row-level diff (warehouses). What's different about MatrixOne is that **all three hold on one table at once**: curation written in SQL, tried on a zero-copy branch, each cut recorded by `DATA BRANCH DIFF`, then published atomically and snapshotted.
 
 ---
 
 ## Boundaries and applicability
 
-- **Git4Data doesn't judge quality for you.** Where the quality score comes from (a scoring model, rules, humans), where the bar sits, how the mix is set — all your decisions. What it guarantees is that those decisions act on a definite data version, the results are auditable, and mistakes can be rolled back.
+- **The Git4Data capability doesn't judge quality for you.** Where the quality score comes from (a scoring model, rules, humans), where the bar sits, how the mix is set — all your decisions. What it guarantees is that those decisions act on a definite data version, the results are auditable, and mistakes can be rolled back.
 
 - **Hash dedup and hash decontamination are the floor, not the ceiling.** Semantic near-duplicates and reworded contamination need vector retrieval or MinHash-style methods to produce candidates first; but once candidates exist, "which rows to drop" comes right back to the row-level flow here.
 
@@ -341,6 +341,6 @@ In one line: the other approaches either lock the filtering logic in scripts and
 
 SFT is the stage of large-model training with the least data and the highest value per record. That's exactly why every curation decision imprints directly on model behavior — and why this has long been the **least transparent** link in the chain: a pile of scripts runs, the pool shrinks a lot, and what went, why, and whether it can be undone rests on memory and discipline.
 
-Replace that with "do it on a branch, get a DIFF receipt, publish atomically, freeze with a snapshot," and the link becomes as controllable as code review: **73,000 → 59,671, and where those 13,329 went is one SQL away**; raising the bar from 0.35 to 0.50 costs 21% of the data, and that price is on the table before training starts; and any historical version can be reconstructed bit for bit at any time.
+Replace that with "do it on a branch, audit it with a DIFF, publish atomically, freeze with a snapshot," and the link becomes as controllable as code review: **73,000 → 59,671, and where those 13,329 went is one SQL away**; raising the bar from 0.35 to 0.50 costs 21% of the data, and that price is on the table before training starts; and any historical version can be reconstructed bit for bit at any time.
 
 > 📎 Runnable SQL: [github.com/matrixorigin/git4data-tutorial](https://github.com/matrixorigin/git4data-tutorial) ｜ Source & community: [github.com/matrixorigin/matrixone](https://github.com/matrixorigin/matrixone)
