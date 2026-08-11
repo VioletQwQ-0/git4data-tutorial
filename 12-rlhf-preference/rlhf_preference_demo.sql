@@ -197,7 +197,8 @@ DATA BRANCH DIFF pairs_curated AGAINST preference_pairs OUTPUT SUMMARY;
 
 -- #############################################################################
 -- 4. ADJUDICATION — two reviewers re-judge the 2-1 splits on their own branches;
---    conflicts surface on MERGE, and only adjudicated rows are PICKed back.
+--    the overlap is materialised as a conflict list BEFORE merging, MERGE then
+--    applies an explicit policy, and PICK takes only adjudicated rows back.
 -- #############################################################################
 DATA BRANCH CREATE TABLE pairs_alice FROM pairs_curated;
 DATA BRANCH CREATE TABLE pairs_bob   FROM pairs_curated;
@@ -215,8 +216,29 @@ WHERE agree_rate < 0.7 AND pair_id % 6 = 0;
 DATA BRANCH DIFF pairs_alice AGAINST pairs_curated OUTPUT SUMMARY;
 DATA BRANCH DIFF pairs_bob   AGAINST pairs_curated OUTPUT SUMMARY;
 
--- Alice merges first; Bob's overlapping rows then conflict and are SKIPped,
--- leaving the mainline's already-adjudicated verdict in place.
+-- IMPORTANT: materialise the conflict list BEFORE merging.
+-- `WHEN CONFLICT SKIP` skips conflicting rows by policy but does NOT return the
+-- skipped pair_ids, so the only way to keep a record of "which rows both
+-- reviewers touched, and what each said" is to query it here, while the
+-- mainline still holds the pre-merge values.
+SELECT COUNT(*) AS rows_both_reviewers_edited
+FROM pairs_alice   a
+JOIN pairs_bob     b ON a.pair_id = b.pair_id
+JOIN pairs_curated m ON m.pair_id = a.pair_id
+WHERE a.chosen_id <> m.chosen_id      -- Alice edited this row
+  AND b.chosen_id <> m.chosen_id;     -- Bob edited it too
+
+SELECT a.pair_id, a.chosen_id AS alice_chosen, b.chosen_id AS bob_chosen
+FROM pairs_alice   a
+JOIN pairs_bob     b ON a.pair_id = b.pair_id
+JOIN pairs_curated m ON m.pair_id = a.pair_id
+WHERE a.chosen_id <> m.chosen_id
+  AND b.chosen_id <> m.chosen_id
+ORDER BY a.pair_id LIMIT 10;
+-- (CREATE TABLE conflicts_v1 AS SELECT ... to freeze the list with the version)
+
+-- Alice merges first; Bob's overlapping rows are then handled by the declared
+-- policy — SKIP keeps the mainline's already-adjudicated verdict in place.
 DATA BRANCH MERGE pairs_alice INTO pairs_curated;
 DATA BRANCH MERGE pairs_bob   INTO pairs_curated WHEN CONFLICT SKIP;
 
