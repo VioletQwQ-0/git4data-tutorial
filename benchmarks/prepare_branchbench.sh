@@ -24,9 +24,11 @@ trap 'echo "FAIL: preparation incomplete; see $LOG" >&3' ERR
         "$REPO/dblib/result.proto" "$REPO/microbench/task.proto" \
         "$REPO/microbench/task2.proto" "$REPO/macrobench/task.proto"
     # The caller may itself contain old dblib/macrobench packages.
-    cd "$REPO"
-    PYTHONPATH="$REPO" "$REPO/.venv/bin/python" -c \
-        'from macrobench import runner; from dblib.dolt import DoltToolSuite; from dblib.matrixone import MoToolSuite'
+    (
+        cd "$REPO"
+        PYTHONPATH="$PWD" "$PWD/.venv/bin/python" -c \
+            'from macrobench import runner; from dblib.dolt import DoltToolSuite; from dblib.matrixone import MoToolSuite'
+    )
 } > "$LOG" 2>&1
 trap - ERR
 echo "PASS: pinned runner prepared at $REPO"
