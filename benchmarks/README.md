@@ -4,6 +4,12 @@ One driver and one pinned BranchBench implementation for MatrixOne **4.2.5** and
 DoltgreSQL. These are current-release runs; their timings do not reproduce the
 paper's historical 4.0.0-rc2 results automatically.
 
+[MatrixOne BranchBench](https://github.com/matrixorigin/matrixone-branchbench-mo)
+is the compatibility entrypoint for older published links. Its migration forwards
+to a fixed commit of this package; the legacy `run_mo_v424.py` filename no longer
+means the new driver runs 4.2.4. Use this directory as the maintained implementation,
+not a second copy of its driver in the compatibility repository.
+
 ## Prepare
 
 Python 3.11+, Git, Docker, and a dedicated database container are required.
@@ -19,6 +25,8 @@ pinned dependencies, and generates protobuf modules. It refuses an existing
 destination. Use its optional first argument for another runner directory, then
 pass that directory through `--repo` and set `PYTHON` to its virtual environment.
 The driver verifies the pinned commit and patch before running.
+Preparation also performs its import check from the prepared runner directory,
+so old `dblib`/`macrobench` modules in the caller's directory cannot shadow it.
 
 ## MatrixOne Smoke
 
