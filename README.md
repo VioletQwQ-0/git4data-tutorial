@@ -84,6 +84,8 @@ drops to the steady-state numbers above.)
 
 ## Links
 
+- Benchmark scripts and release-specific setup: [benchmarks/](benchmarks/README.md)
+
 - MatrixOne: https://github.com/matrixorigin/matrixone
 - Docs: https://docs.matrixorigin.cn/
 

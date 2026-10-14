@@ -1,0 +1,6 @@
+backend: MATRIXONE
+workflow: DATA_CLEANING
+database_setup { existing_db { branch_id: "main" } }
+setup { workers: 10 total_steps: 20 root_fanout: 10 inner_fanout: 3 max_depth: 3 cross_branch_queries: 2 }
+step { schema_changes: 1 data_mutations: 1 eval_queries: 1 prune_prob: 0.0 }
+autocommit: true

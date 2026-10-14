@@ -1,0 +1,227 @@
+diff --git a/dblib/dolt.py b/dblib/dolt.py
+index 0e7be5e..f99bdb1 100644
+--- a/dblib/dolt.py
++++ b/dblib/dolt.py
+@@ -34 +34 @@ def commit_dolt_schema(db_uri: str, message: str = "Load SQL schema") -> None:
+-        print(f"Warning: Dolt schema commit failed (may be okay): {e}")
++        raise RuntimeError("DoltgreSQL schema commit failed") from e
+diff --git a/dblib/matrixone.py b/dblib/matrixone.py
+index 272d121..7b34a2a 100644
+--- a/dblib/matrixone.py
++++ b/dblib/matrixone.py
+@@ -30 +30 @@ MO_PORT = int(os.environ.get("MO_PORT", "6001"))
+-def _connect(db_name: str = None, autocommit: bool = False) -> pymysql.connections.Connection:
++def _connect(db_name: str = None, autocommit: bool = False, timeout: float = None) -> pymysql.connections.Connection:
+@@ -31,0 +32 @@ def _connect(db_name: str = None, autocommit: bool = False) -> pymysql.connectio
++    timeout = timeout or float(os.environ.get("MO_QUERY_TIMEOUT_SEC", "1800"))
+@@ -39,0 +41,3 @@ def _connect(db_name: str = None, autocommit: bool = False) -> pymysql.connectio
++        connect_timeout=5,
++        read_timeout=timeout,
++        write_timeout=timeout,
+@@ -190,2 +194,2 @@ class MoToolSuite(DBToolSuite):
+-            # The clone is a full materialized copy; the snapshot is no longer
+-            # needed. Best-effort cleanup so snapshots don't accumulate.
++            # The clone has its own metadata references to shared immutable objects.
++            # The temporary snapshot is no longer needed after cloning.
+diff --git a/macrobench/runner.py b/macrobench/runner.py
+index 02f7449..f10aec4 100644
+--- a/macrobench/runner.py
++++ b/macrobench/runner.py
+@@ -25,0 +26 @@ from macrobench.workflows import get_workflow_ops, WorkflowOps
++from macrobench.validation import summarize_run_validity
+@@ -65 +66 @@ TxnToolSuite = _optional_suite(
+-from dblib.matrixone import MoToolSuite
++from dblib.matrixone import MoToolSuite, _connect as mo_connect
+@@ -248,0 +250 @@ def _run_cross_branch_queries(
++    errors = 0
+@@ -279,0 +282 @@ def _run_cross_branch_queries(
++                    errors += 1
+@@ -282 +285 @@ def _run_cross_branch_queries(
+-                        f"{node.name}: {type(e).__name__}"
++                        f"{node.name}: {type(e).__name__}: {e}"
+@@ -284,0 +288 @@ def _run_cross_branch_queries(
++            errors += 1
+@@ -287 +291 @@ def _run_cross_branch_queries(
+-                f"{node.name}: {type(e).__name__}"
++                f"{node.name}: {type(e).__name__}: {e}"
+@@ -288,0 +293 @@ def _run_cross_branch_queries(
++    return errors
+@@ -456,0 +462,9 @@ def worker_fn(
++    operation_errors = {}
++    operation_error_examples = []
++
++    def record_error(operation, error):
++        operation_errors[operation] = operation_errors.get(operation, 0) + 1
++        if len(operation_error_examples) < 3:
++            operation_error_examples.append(
++                f"{operation}: {type(error).__name__}: {error}"
++            )
+@@ -521,0 +536 @@ def worker_fn(
++                record_error("branch", e)
+@@ -560,0 +576 @@ def worker_fn(
++                    record_error("ddl", e)
+@@ -583,0 +600 @@ def worker_fn(
++                    record_error("dml", e)
+@@ -604,0 +622 @@ def worker_fn(
++                    record_error("evaluate", e)
+@@ -618 +636 @@ def worker_fn(
+-                    _run_cross_branch_queries(
++                    compare_errors = _run_cross_branch_queries(
+@@ -626,0 +645,4 @@ def worker_fn(
++                    if compare_errors:
++                        operation_errors["compare"] = (
++                            operation_errors.get("compare", 0) + compare_errors
++                        )
+@@ -667,0 +690 @@ def worker_fn(
++                    record_error("prune", e)
+@@ -686,0 +710,2 @@ def worker_fn(
++        if status == "completed" and operation_errors:
++            status = "completed_with_errors"
+@@ -694,0 +720,2 @@ def worker_fn(
++                "operation_errors": operation_errors,
++                "operation_error_examples": operation_error_examples,
+@@ -815,0 +843,5 @@ def main():
++    parser.add_argument(
++        "--strict-operations",
++        action="store_true",
++        help="Exit nonzero if any worker step or SQL operation failed.",
++    )
+@@ -925,0 +958 @@ def main():
++    future_errors = 0
+@@ -931,0 +965,13 @@ def main():
++        if config.backend == tp.Backend.MATRIXONE:
++            try:
++                # PyMySQL has no cancel(); use a separate control connection.
++                with mo_connect(autocommit=True, timeout=5) as control:
++                    for conn in list(worker_conns.values()):
++                        if conn.open:
++                            try:
++                                control.kill(conn.thread_id())
++                            except Exception:
++                                pass
++            except Exception:
++                pass  # The driver's hard process-group timeout remains the fallback.
++            return
+@@ -968,0 +1015 @@ def main():
++                    future_errors += 1
+@@ -1024,0 +1072,4 @@ def main():
++        validity = summarize_run_validity(
++            completed_work, num_workers, config.setup.total_steps, timed_out,
++            future_errors,
++        )
+@@ -1043,0 +1095,12 @@ def main():
++            "operation_errors": {
++                str(k): v.get("operation_errors", {})
++                for k, v in completed_work.items()
++            },
++            "operation_error_examples": {
++                str(k): v.get("operation_error_examples", [])
++                for k, v in completed_work.items()
++                if v.get("operation_error_examples")
++            },
++            "total_operation_errors": validity["total_operation_errors"],
++            "run_valid": validity["valid"],
++            "invalid_reasons": validity["invalid_reasons"],
+@@ -1074,0 +1138 @@ def main():
++        cleanup_failed = False
+@@ -1085,0 +1150,4 @@ def main():
++                    cleanup_failed = True
++
++        if args.strict_operations and (not validity["valid"] or cleanup_failed):
++            raise SystemExit(2)
+diff --git a/macrobench/validation.py b/macrobench/validation.py
+new file mode 100644
+index 0000000..6c8b939
+--- /dev/null
++++ b/macrobench/validation.py
+@@ -0,0 +1,29 @@
++"""Validity checks for a completed macrobenchmark run."""
++
++
++def summarize_run_validity(completed_work, workers, steps_per_worker, timed_out,
++                           worker_exceptions=0):
++    """Keep successful steps separate from successful SQL operations."""
++    completed_steps = sum(work.get("steps", 0) for work in completed_work.values())
++    operation_errors = sum(
++        sum(work.get("operation_errors", {}).values())
++        for work in completed_work.values()
++    )
++    reasons = []
++    if timed_out:
++        reasons.append("runtime_cap")
++    if worker_exceptions:
++        reasons.append("worker_exceptions")
++    if len(completed_work) != workers:
++        reasons.append("missing_workers")
++    if completed_steps != workers * steps_per_worker:
++        reasons.append("incomplete_steps")
++    if operation_errors:
++        reasons.append("operation_errors")
++    if any(work.get("status") != "completed" for work in completed_work.values()):
++        reasons.append("worker_status")
++    return {
++        "valid": not reasons,
++        "invalid_reasons": reasons,
++        "total_operation_errors": operation_errors,
++    }
+diff --git a/microbench/runner.py b/microbench/runner.py
+index 48bac9e..92359fe 100644
+--- a/microbench/runner.py
++++ b/microbench/runner.py
+@@ -150 +150 @@ def create_backend_project(config: tp.TaskConfig, output_dir: str = "/tmp/run_st
+-        print(f"Default Dolt connection URI: {info.default_uri}")
++        print("DoltgreSQL backend initialized")
+@@ -441,0 +442,2 @@ def cleanup_backend(
++            if config.backend == tp.Backend.DOLT:
++                raise
+diff --git a/util/import_db.py b/util/import_db.py
+index 7132013..85982d5 100644
+--- a/util/import_db.py
++++ b/util/import_db.py
+@@ -1,0 +2 @@ import argparse
++import os
+@@ -6,0 +8,2 @@ from typing import Union
++from psycopg2.extensions import make_dsn, parse_dsn
++
+@@ -36,2 +39,7 @@ def load_sql_file(
+-    # Build psql command with connection URI
+-    # Use -a (echo all) or -e (echo queries) for progress when verbose
++    params = parse_dsn(connection_uri)
++    env = dict(os.environ)
++    password = params.pop("password", None)
++    if password is not None:
++        env["PGPASSWORD"] = password
++    env.setdefault("PGCONNECT_TIMEOUT", "5")
++    # Keep credentials out of argv and ignore any local psql startup file.
+@@ -40 +48,2 @@ def load_sql_file(
+-        connection_uri,
++        make_dsn(**params),
++        "-X",
+@@ -53,2 +62,3 @@ def load_sql_file(
+-        # Use Popen for real-time output streaming
+-        process = subprocess.Popen(
++        # The parent driver already redirects output to its per-run log. Never
++        # wait on undrained stdout/stderr pipes, which can deadlock a seed load.
++        process = subprocess.run(
+@@ -56,4 +66,3 @@ def load_sql_file(
+-            stdout=subprocess.PIPE,
+-            stderr=subprocess.PIPE,
+-            text=True,
+-            bufsize=1,  # Line buffered
++            stdout=None if verbose else subprocess.DEVNULL,
++            env=env,
++            check=False,
+@@ -62,8 +70,0 @@ def load_sql_file(
+-        # Stream stdout in real-time
+-        if verbose:
+-            for line in process.stdout:
+-                print(line, end="")
+-
+-        # Wait for completion and get return code
+-        process.wait()
+-
+@@ -71,3 +72 @@ def load_sql_file(
+-            stderr = process.stderr.read()
+-            print(f"✗ Error executing SQL file: {stderr}", file=sys.stderr)
+-            raise RuntimeError(f"psql failed: {stderr}")
++            raise RuntimeError(f"psql failed with exit code {process.returncode}; see the runner log")

@@ -1,0 +1,18 @@
+CREATE TABLE n10 (n INT PRIMARY KEY);
+INSERT INTO n10 VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+CREATE TABLE warehouse (w_id INT PRIMARY KEY, w_name VARCHAR(32), w_ytd DECIMAL(12,2));
+CREATE TABLE district (d_id INT, d_w_id INT, d_next_o_id INT, PRIMARY KEY(d_w_id, d_id));
+CREATE TABLE customer (c_id INT, c_d_id INT, c_w_id INT, c_credit_lim DECIMAL(12,2), c_ytd_payment DECIMAL(12,2), c_balance DECIMAL(12,2), PRIMARY KEY(c_w_id, c_d_id, c_id));
+CREATE TABLE item (i_id INT PRIMARY KEY, i_price DECIMAL(12,2), i_name VARCHAR(32));
+CREATE TABLE stock (s_i_id INT, s_w_id INT, s_quantity INT, PRIMARY KEY(s_w_id, s_i_id));
+CREATE TABLE orders (o_id INT, o_d_id INT, o_w_id INT, o_c_id INT, o_carrier_id INT NULL, o_ol_cnt INT, o_all_local INT, o_entry_d DATETIME, PRIMARY KEY(o_w_id, o_d_id, o_id));
+CREATE TABLE new_order (no_o_id INT, no_d_id INT, no_w_id INT, PRIMARY KEY(no_w_id, no_d_id, no_o_id));
+CREATE TABLE order_line (ol_o_id INT, ol_d_id INT, ol_w_id INT, ol_number INT, ol_i_id INT, ol_supply_w_id INT, ol_delivery_d DATETIME NULL, ol_quantity INT, ol_amount DECIMAL(12,2), ol_dist_info VARCHAR(32), PRIMARY KEY(ol_w_id, ol_d_id, ol_o_id, ol_number));
+INSERT INTO warehouse SELECT n + 1, CONCAT('w', n + 1), 0 FROM n10;
+INSERT INTO district SELECT d.n + 1, w.n + 1, 2 FROM n10 w CROSS JOIN n10 d;
+INSERT INTO customer SELECT 42, d.n + 1, w.n + 1, 50000, 10, 100 FROM n10 w CROSS JOIN n10 d;
+INSERT INTO item SELECT a.n * 100 + b.n * 10 + c.n + 1, 1.00, 'item' FROM n10 a CROSS JOIN n10 b CROSS JOIN n10 c;
+INSERT INTO stock SELECT i.i_id, w.n + 1, 100 FROM item i CROSS JOIN n10 w;
+INSERT INTO orders SELECT 1, 1, w.n + 1, 42, NULL, 1, 1, CURRENT_TIMESTAMP FROM n10 w;
+INSERT INTO new_order SELECT 1, 1, w.n + 1 FROM n10 w;
+INSERT INTO order_line SELECT 1, 1, w.n + 1, 1, 1, w.n + 1, NULL, 5, 1.00, 'dist_info' FROM n10 w;

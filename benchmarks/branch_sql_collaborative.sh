@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "Bash 4+ is required" >&2
+  exit 1
+fi
+
 SCRIPT_NAME=$(basename "$0")
 tables=(T1 T2 T3 T4)
 
@@ -12,8 +17,8 @@ Usage: $SCRIPT_NAME <mode> <C> <R> <G>
   R   : positive integer number of repetitions
   G   : true | false, whether rnd_keys partitions must overlap by >=10%
 
-  example: ./exp2.sh branch 10000 2 false
-           ./exp2.sh sql 1000 1 true
+  example: ./$SCRIPT_NAME branch 10000 2 false
+           ./$SCRIPT_NAME sql 1000 1 true
 USAGE
 }
 
@@ -57,7 +62,21 @@ fi
 G_FLAG=$G_INPUT
 
 MYSQL_BIN=${MYSQL_BIN:-mysql}
-MYSQL_CMD=("$MYSQL_BIN" "-h127.0.0.1" "-P6001" "-udump" "-p111" "-D" "tpch_100g" "--batch" "--raw" "--skip-column-names" "--silent")
+MYSQL_HOST=${MYSQL_HOST:-127.0.0.1}
+MYSQL_PORT=${MYSQL_PORT:-6001}
+MYSQL_USER=${MYSQL_USER:-root}
+MYSQL_PASSWORD=${MYSQL_PASSWORD-111}
+MYSQL_DB=${MYSQL_DB:-tpch_100g}
+export MYSQL_PWD="$MYSQL_PASSWORD"
+MYSQL_CMD=("$MYSQL_BIN" -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -D "$MYSQL_DB" --batch --raw --skip-column-names --silent)
+
+EXPECTED_MO_VERSION=${EXPECTED_MO_VERSION:-4.2.5}
+MO_SERVER_VERSION=$("${MYSQL_CMD[@]}" -e 'SELECT VERSION();') || exit 1
+VERSION_PATTERN=${EXPECTED_MO_VERSION//./[.]}
+if ! [[ "$MO_SERVER_VERSION" =~ (^|[^0-9.])${VERSION_PATTERN}([^0-9.]|$) ]]; then
+  echo "Expected MatrixOne $EXPECTED_MO_VERSION" >&2
+  exit 1
+fi
 
 declare -A OP_TIMES=()
 declare -a OP_ORDER=()

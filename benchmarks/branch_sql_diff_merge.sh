@@ -3,20 +3,20 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: exp1.sh <create_mode> <C> <runs>
+Usage: branch_sql_diff_merge.sh <create_mode> <C> <runs>
   create_mode: branch | sql
   C          : positive integer count used in sampling
   runs       : positive integer number of experiment repetitions
 
-  example: ./exp1.sh branch 1000 5
-           ./exp1.sh sql 1000 1
+  example: ./branch_sql_diff_merge.sh branch 1000 5
+           ./branch_sql_diff_merge.sh sql 1000 1
 
 Environment (override with export before running):
   MYSQL_BIN       (default: mysql)
   MYSQL_HOST      (default: 127.0.0.1)
   MYSQL_PORT      (default: 6001)
-  MYSQL_USER      (default: dump)
-  MYSQL_PASSWORD  (default: 111, unset for passwordless)
+  MYSQL_USER      (default: root)
+  MYSQL_PASSWORD  (default: 111, set empty for passwordless)
   MYSQL_DB        (default: tpch_100g)
 EOF
   exit 1
@@ -60,7 +60,7 @@ fi
 MYSQL_BIN=${MYSQL_BIN:-mysql}
 MYSQL_HOST=${MYSQL_HOST:-127.0.0.1}
 MYSQL_PORT=${MYSQL_PORT:-6001}
-MYSQL_USER=${MYSQL_USER:-dump}
+MYSQL_USER=${MYSQL_USER:-root}
 MYSQL_PASSWORD=${MYSQL_PASSWORD-111}
 MYSQL_DB=${MYSQL_DB:-tpch_100g}
 
@@ -85,6 +85,14 @@ run_sql() {
     "$MYSQL_BIN" "${MYSQL_ARGS[@]}" -e "$sql"
   fi
 }
+
+EXPECTED_MO_VERSION=${EXPECTED_MO_VERSION:-4.2.5}
+MO_SERVER_VERSION=$(run_sql 'SELECT VERSION();') || exit 1
+VERSION_PATTERN=${EXPECTED_MO_VERSION//./[.]}
+if ! [[ "$MO_SERVER_VERSION" =~ (^|[^0-9.])${VERSION_PATTERN}([^0-9.]|$) ]]; then
+  echo "Expected MatrixOne $EXPECTED_MO_VERSION" >&2
+  exit 1
+fi
 
 declare -a TIMING_LABELS=()
 declare -a TIMING_VALUES=()

@@ -1,0 +1,6 @@
+backend: MATRIXONE
+workflow: SIMULATION
+database_setup { existing_db { branch_id: "main" } }
+setup { workers: 1000 total_steps: 1 root_fanout: 1000 max_depth: 1 cross_branch_queries: 1 }
+step { schema_changes: 0 data_mutations: 50 eval_queries: 1 prune_prob: 1.0 }
+autocommit: true
